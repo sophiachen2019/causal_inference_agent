@@ -10,7 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from econml.dml import LinearDML, CausalForestDML
 from econml.metalearners import SLearner, TLearner
 import matplotlib.pyplot as plt
-from utils import generate_script
+from causal_utils import generate_script
 
 # --- 1. Data Simulation ---
 @st.cache_data
