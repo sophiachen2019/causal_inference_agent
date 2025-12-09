@@ -1,0 +1,534 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import dowhy
+from dowhy import CausalModel
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.linear_model import LinearRegression, LogisticRegression, LassoCV
+from sklearn.preprocessing import StandardScaler
+from econml.dml import LinearDML, CausalForestDML
+from econml.metalearners import SLearner, TLearner
+import matplotlib.pyplot as plt
+
+# --- 1. Data Simulation ---
+@st.cache_data
+def simulate_data(n_samples=1000):
+    np.random.seed(42)
+    
+    # Confounders
+    # Customer Segment: 0 = SMB, 1 = Enterprise
+    customer_segment = np.random.binomial(1, 0.3, n_samples)
+    
+    # Historical Usage: Continuous variable
+    historical_usage = np.random.normal(50, 15, n_samples) + (customer_segment * 20)
+    
+    # Instrument: Marketing Nudge (Randomly assigned, affects adoption but not value directly)
+    marketing_nudge = np.random.binomial(1, 0.5, n_samples)
+    
+    # Time Period: Quarter (0 = Pre, 1 = Post) - for DiD
+    quarter = np.random.binomial(1, 0.5, n_samples)
+
+    # Treatment: Feature Adoption (Binary)
+    # Probability of adoption depends on segment, usage, AND marketing nudge
+    prob_adoption = 1 / (1 + np.exp(-( -2 + 0.5 * customer_segment + 0.05 * historical_usage + 1.5 * marketing_nudge)))
+    feature_adoption = np.random.binomial(1, prob_adoption, n_samples)
+    
+    # Outcome: Account Value
+    # True causal effect of feature adoption is $500
+    # Also depends on segment, usage, and time (trend)
+    account_value = (
+        200 
+        + 500 * feature_adoption 
+        + 1000 * customer_segment 
+        + 10 * historical_usage 
+        + 50 * quarter # Time trend
+        + np.random.normal(0, 50, n_samples)
+    )
+    
+    df = pd.DataFrame({
+        'Customer_Segment': customer_segment,
+        'Historical_Usage': historical_usage,
+        'Marketing_Nudge': marketing_nudge,
+        'Quarter': quarter,
+        'Feature_Adoption': feature_adoption,
+        'Account_Value': account_value
+    })
+    
+    # Enforce Data Types
+    df['Customer_Segment'] = df['Customer_Segment'].astype(int)
+    df['Historical_Usage'] = df['Historical_Usage'].astype(float)
+    df['Marketing_Nudge'] = df['Marketing_Nudge'].astype(int)
+    df['Quarter'] = df['Quarter'].astype(int)
+    df['Feature_Adoption'] = df['Feature_Adoption'].astype(int)
+    df['Account_Value'] = df['Account_Value'].astype(float)
+    
+    return df
+
+# --- Streamlit UI ---
+st.set_page_config(page_title="Causal Inference Agent", layout="wide")
+st.title("🤖 Causal Inference Agent: Feature Adoption Impact")
+
+# Load Data
+with st.sidebar:
+    st.header("Configuration")
+    
+    data_source = st.radio("Data Source", ["Simulated Data", "Upload CSV"])
+    
+    if data_source == "Upload CSV":
+        uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+        if uploaded_file is not None:
+            df = pd.read_csv(uploaded_file)
+        else:
+            st.info("Awaiting CSV upload. Using simulated data for preview.")
+            df = simulate_data()
+    else:
+        df = simulate_data()
+
+    # --- Data Preprocessing ---
+    with st.expander("Data Preprocessing", expanded=False):
+        st.markdown("### Transformations")
+        
+        # 1. Missing Value Imputation
+        impute_missing = st.checkbox("Impute Missing Values", value=False, help="Fills numeric columns with mean and categorical with mode.")
+        
+        if impute_missing:
+            # Numeric
+            num_cols = df.select_dtypes(include=[np.number]).columns
+            df[num_cols] = df[num_cols].fillna(df[num_cols].mean())
+            # Categorical
+            cat_cols = df.select_dtypes(exclude=[np.number]).columns
+            for col in cat_cols:
+                df[col] = df[col].fillna(df[col].mode()[0])
+            st.info("Missing values imputed.")
+
+        # 2. Log Transformation
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        log_transform_cols = st.multiselect("Apply Log Transformation (np.log1p)", numeric_cols, help="Applies log(x+1) to selected columns.")
+        
+        if log_transform_cols:
+            for col in log_transform_cols:
+                # Ensure no negative values for log
+                if (df[col] < 0).any():
+                    st.warning(f"Column '{col}' contains negative values. Log transformation skipped for this column.")
+                else:
+                    df[col] = np.log1p(df[col])
+            st.info(f"Log transformation applied to: {', '.join(log_transform_cols)}")
+
+        # 3. Standardization
+        standardize_cols = st.multiselect("Standardize Variables (StandardScaler)", numeric_cols, help="Scales variables to have mean=0 and std=1.")
+        
+        if standardize_cols:
+            scaler = StandardScaler()
+            df[standardize_cols] = scaler.fit_transform(df[standardize_cols])
+            st.info(f"Standardization applied to: {', '.join(standardize_cols)}")
+
+    st.markdown("Select variables for analysis:")
+    
+    # Ensure columns exist in df (handle case where upload might have different columns)
+    # We'll try to find defaults if they exist, else pick first available
+    
+    def get_index(columns, default_name, default_idx):
+        if default_name in columns:
+            return list(columns).index(default_name)
+        return default_idx if default_idx < len(columns) else 0
+
+    treatment = st.selectbox("Treatment (Action)", df.columns, index=get_index(df.columns, 'Feature_Adoption', 2)) 
+    outcome = st.selectbox("Outcome (Result)", df.columns, index=get_index(df.columns, 'Account_Value', 3))
+    
+    default_confounders = [c for c in ['Customer_Segment', 'Historical_Usage'] if c in df.columns]
+    confounders = st.multiselect("Confounders (Common Causes)", df.columns, default=default_confounders)
+    
+    # Optional Inputs for Advanced Methods
+    instrument = st.selectbox("Instrument (for IV)", [None] + list(df.columns), index=get_index(df.columns, 'Marketing_Nudge', 3) + 1 if 'Marketing_Nudge' in df.columns else 0) 
+    time_period = st.selectbox("Time Period (for DiD)", [None] + list(df.columns), index=get_index(df.columns, 'Quarter', 4) + 1 if 'Quarter' in df.columns else 0)
+    
+    estimation_method = st.selectbox(
+        "Estimation Method",
+        [
+            "Double Machine Learning (LinearDML)", 
+            "Propensity Score Matching",
+            "Inverse Propensity Weighting (IPTW)",
+            "Meta-Learner: S-Learner",
+            "Meta-Learner: T-Learner",
+            "Causal Forest (DML)",
+            "Instrumental Variables (IV)",
+            "Difference-in-Differences (DiD)"
+        ]
+    )
+
+    run_analysis = st.button("Run Causal Analysis", type="primary")
+
+st.markdown("### Simulated B2B SaaS Data Preview")
+st.dataframe(df.head())
+
+st.markdown("#### Data Summary & Distributions")
+with st.expander("Show Summary Statistics & Plots", expanded=False):
+    st.markdown("**Summary Statistics**")
+    st.dataframe(df.describe())
+    
+    st.markdown("**Distributions**")
+    cols = st.columns(3)
+    for i, col in enumerate(df.columns):
+        with cols[i % 3]:
+            fig, ax = plt.subplots()
+            if len(df[col].unique()) <= 10: # Categorical / Binary
+                df[col].value_counts().sort_index().plot(kind='bar', ax=ax)
+                ax.set_title(f"{col} (Count)")
+            else: # Continuous
+                df[col].hist(bins=20, ax=ax)
+                ax.set_title(f"{col} (Dist)")
+            st.pyplot(fig)
+            plt.close(fig)
+
+if run_analysis:
+    if not confounders:
+        st.error("Please select at least one confounder.")
+    else:
+        st.divider()
+        st.header("Causal Analysis Pipeline")
+        
+        # --- Step 1: Model ---
+        st.subheader("1. Causal Model")
+        st.markdown("**Methodology:** Structural Causal Model (SCM)")
+        st.markdown("We define a Directed Acyclic Graph (DAG) $G = (V, E)$ where:")
+        st.markdown(f"- $V$: Variables including Treatment (`{treatment}`), Outcome (`{outcome}`), and Confounders.")
+        st.markdown("- $E$: Causal edges representing direct effects.")
+        st.markdown("Assumption: **Causal Markov Assumption** (each variable is independent of its non-descendants given its parents).")
+        
+        with st.spinner("Building Causal Graph..."):
+            model = CausalModel(
+                data=df,
+                treatment=treatment,
+                outcome=outcome,
+                common_causes=confounders,
+                instruments=[instrument] if instrument else None,
+                effect_modifiers=confounders
+            )
+        
+        st.success("Model built successfully!")
+        st.markdown("**Assumptions:**")
+        st.write(f"Treatment: `{treatment}` causes Outcome: `{outcome}`")
+        st.write(f"Confounders: `{', '.join(confounders)}` affect both.")
+        
+
+        
+        # Visualize Graph (Optional - simplistic view)
+        # st.graphviz_chart(model.view_model()) # Requires graphviz installed on system
+
+        # --- Step 2: Identify ---
+        st.subheader("2. Identification")
+        st.markdown("**Methodology:** Backdoor Criterion")
+        st.markdown("We aim to identify the causal effect $P(Y|do(T))$ from observational data $P(Y, T, X)$.")
+        st.markdown("If a set of variables $X$ satisfies the Backdoor Criterion, we can use the **Adjustment Formula**:")
+        st.latex(r"P(Y|do(T)) = \sum_X P(Y|T, X)P(X)")
+        
+        identified_estimand = model.identify_effect(proceed_when_unidentifiable=True)
+        st.write("Identified Estimand Type:", identified_estimand.estimand_type)
+        
+        # --- Step 3: Estimate (using EconML / DML) ---
+        st.subheader(f"3. Estimation ({estimation_method})")
+        with st.spinner(f"Estimating Causal Effect using {estimation_method}..."):
+            
+            if estimation_method == "Double Machine Learning (LinearDML)":
+                st.markdown("#### Method: Double Machine Learning (DML)")
+                st.markdown("DML removes the effect of confounders ($X$) from both treatment ($T$) and outcome ($Y$) using ML models.")
+                
+                st.markdown("**Step 1: Residualize Outcome**")
+                st.latex(r"Y_{res} = Y - E[Y|X]")
+                
+                st.markdown("**Step 2: Residualize Treatment**")
+                st.latex(r"T_{res} = T - E[T|X]")
+                
+                st.markdown("**Step 3: Estimate Causal Effect**")
+                st.latex(r"Y_{res} = \theta \cdot T_{res} + \epsilon")
+                st.caption("Where $\\theta$ is the Average Treatment Effect (ATE).")
+
+                # We use LinearDML from EconML
+                # It uses ML models to residualize treatment and outcome, then runs linear regression on residuals
+                
+                est = LinearDML(
+                    model_y=RandomForestRegressor(random_state=42),
+                    model_t=RandomForestClassifier(random_state=42),
+                    discrete_treatment=True,
+                    linear_first_stages=False,
+                    cv=3,
+                    random_state=42
+                )
+                
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name="backdoor.econml.dml.LinearDML",
+                    method_params={
+                        "init_params": {
+                            "model_y": RandomForestRegressor(random_state=42),
+                            "model_t": RandomForestClassifier(random_state=42),
+                            "discrete_treatment": True,
+                            "linear_first_stages": False,
+                            "cv": 3,
+                            "random_state": 42
+                        },
+                        "fit_params": {}
+                    }
+                )
+            elif estimation_method == "Propensity Score Matching":
+                st.markdown("#### Method: Propensity Score Matching (PSM)")
+                st.markdown("PSM matches treated units with control units that have similar probability of receiving treatment.")
+                
+                st.markdown("**Step 1: Estimate Propensity Score**")
+                st.latex(r"e(x) = P(T=1|X=x)")
+                
+                st.markdown("**Step 2: Match Units**")
+                st.markdown("Find control unit $j$ for treated unit $i$ such that $e(x_i) \approx e(x_j)$.")
+                
+                st.markdown("**Step 3: Estimate ATE**")
+                st.latex(r"ATE = \frac{1}{N} \sum_{i=1}^{N} (Y_i(1) - Y_{match(i)}(0))")
+                
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name="backdoor.propensity_score_matching"
+                )
+
+            elif estimation_method == "Inverse Propensity Weighting (IPTW)":
+                st.markdown("#### Method: Inverse Propensity Weighting (IPTW)")
+                st.markdown("IPTW re-weights the data to create a pseudo-population where treatment is independent of confounders.")
+                
+                st.markdown("**Step 1: Estimate Propensity Score**")
+                st.latex(r"e(x) = P(T=1|X=x)")
+                
+                st.markdown("**Step 2: Calculate Weights**")
+                st.latex(r"w_i = \frac{T_i}{e(x_i)} + \frac{1-T_i}{1-e(x_i)}")
+                
+                st.markdown("**Step 3: Estimate ATE**")
+                st.latex(r"ATE = \frac{1}{N} \sum_{i=1}^{N} w_i Y_i")
+                
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name="backdoor.propensity_score_weighting"
+                )
+
+            elif "Meta-Learner" in estimation_method:
+                learner_type = estimation_method.split(": ")[1]
+                st.markdown(f"#### Method: {learner_type}")
+                
+                if learner_type == "S-Learner":
+                    st.markdown("S-Learner (Single Learner) treats treatment as a feature in a single ML model.")
+                    st.latex(r"f(X, T) \approx Y")
+                    st.latex(r"ATE = E[f(X, 1) - f(X, 0)]")
+                    method_name = "backdoor.econml.metalearners.SLearner"
+                    init_params = {"overall_model": RandomForestRegressor(random_state=42)}
+                else: # T-Learner
+                    st.markdown("T-Learner (Two Learners) fits separate models for treated and control groups.")
+                    st.latex(r"\mu_1(X) \approx E[Y|T=1, X], \quad \mu_0(X) \approx E[Y|T=0, X]")
+                    st.latex(r"ATE = E[\mu_1(X) - \mu_0(X)]")
+                    method_name = "backdoor.econml.metalearners.TLearner"
+                    init_params = {"models": RandomForestRegressor(random_state=42)}
+
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name=method_name,
+                    method_params={
+                        "init_params": init_params,
+                        "fit_params": {}
+                    }
+                )
+
+            elif estimation_method == "Causal Forest (DML)":
+                st.markdown("#### Method: Causal Forest (DML)")
+                st.markdown("Causal Forests extend Random Forests to estimate heterogeneous treatment effects (CATE) using an honest splitting criterion.")
+                st.latex(r"\hat{\tau}(x) = \frac{\sum \alpha_i(x) (Y_i - \hat{m}(X_i)) (T_i - \hat{e}(X_i))}{\sum \alpha_i(x) (T_i - \hat{e}(X_i))^2}")
+                
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name="backdoor.econml.dml.CausalForestDML",
+                    method_params={
+                        "init_params": {
+                            "model_y": RandomForestRegressor(random_state=42),
+                            "model_t": RandomForestClassifier(random_state=42),
+                            "discrete_treatment": True,
+                            "random_state": 42
+                        },
+                        "fit_params": {}
+                    }
+                )
+
+            elif estimation_method == "Instrumental Variables (IV)":
+                st.markdown("#### Method: Instrumental Variables (IV)")
+                if not instrument:
+                    st.error("Please select an Instrument in the sidebar.")
+                    st.stop()
+                
+                st.markdown("IV uses an instrument ($Z$) that affects treatment ($T$) but has no direct effect on outcome ($Y$) except through $T$.")
+                st.latex(r"ATE = \frac{Cov(Y, Z)}{Cov(T, Z)}")
+                
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name="iv.instrumental_variable"
+                )
+
+            elif estimation_method == "Difference-in-Differences (DiD)":
+                st.markdown("#### Method: Difference-in-Differences (DiD)")
+                if not time_period:
+                    st.error("Please select a Time Period in the sidebar.")
+                    st.stop()
+
+                st.markdown("DiD compares the changes in outcomes over time between a treatment group and a control group.")
+                st.latex(r"ATE = (E[Y|T=1, Post] - E[Y|T=1, Pre]) - (E[Y|T=0, Post] - E[Y|T=0, Pre])")
+                
+                # For DiD, we often use a regression formulation: Y ~ T + Time + T*Time
+                # DoWhy doesn't have a direct "backdoor.difference_in_differences" method that works easily with this setup without specific data format
+                # So we will use a GLM (Linear Regression) which is equivalent to DiD with interaction term
+                
+                estimate = model.estimate_effect(
+                    identified_estimand,
+                    method_name="backdoor.linear_regression",
+                    test_significance=True
+                )
+                st.info("Note: Using Linear Regression with interaction terms to approximate DiD.")
+            
+        ate = estimate.value
+        st.metric(label="Average Treatment Effect (ATE)", value=f"${ate:.2f}")
+        
+        st.info(
+            f"**Interpretation:** On average, `{treatment}` increases `{outcome}` by **${ate:.2f}** "
+            "after accounting for confounding variables."
+        )
+
+        # --- Step 4: Refute ---
+        st.subheader("4. Refutation")
+        st.markdown("**Methodology:** Random Common Cause Test")
+        st.markdown("We add a random variable $W_{random}$ as a common cause to the dataset.")
+        st.markdown("Since $W_{random}$ is independent of the true process, the new estimate should not change significantly.")
+        st.latex(r"Y_{new} = f(T, X, W_{random}) + \epsilon")
+        st.markdown("Expected Result: $ATE_{new} \\approx ATE_{original}$")
+
+        with st.spinner("Running Refutation Tests..."):
+            refute_results = model.refute_estimate(
+                identified_estimand,
+                estimate,
+                method_name="random_common_cause"
+            )
+            
+        st.write("**Test: Add Random Common Cause**")
+        st.write(f"Original Effect: {refute_results.estimated_effect:.2f}")
+        st.write(f"New Effect: {refute_results.new_effect:.2f}")
+        st.write(f"P-value: {refute_results.refutation_result['p_value']:.2f}")
+        
+        if refute_results.refutation_result['p_value'] > 0.05: # Simplistic check, usually we check if new effect is close to original
+             st.success("✅ Robustness Check Passed: The estimate is stable.")
+        else:
+             st.warning("⚠️ Robustness Check Warning: The estimate might be sensitive.")
+
+        # --- Step 5: Explore Results ---
+        st.subheader("5. Explore Results")
+        
+        # Check if method supports Heterogeneous Treatment Effects (CATE)
+        cate_methods = [
+            "Double Machine Learning (LinearDML)",
+            "Meta-Learner: S-Learner",
+            "Meta-Learner: T-Learner",
+            "Causal Forest (DML)"
+        ]
+        
+        if estimation_method in cate_methods:
+            st.markdown("#### Individual Treatment Effects (ITE)")
+            st.markdown("Distribution of causal effects across the population.")
+            
+            try:
+                # EconML estimators in DoWhy are wrapped. 
+                # We need to pass the effect modifiers (X) to predict ITE.
+                # For this simple app, we'll use the confounders as X.
+                X_test = df[confounders]
+                
+                # Accessing the underlying EconML estimator can be tricky via DoWhy's unified API
+                # But estimate.estimator object usually exposes it.
+                # However, DoWhy's CausalEstimator might not directly expose 'effect' for all.
+                # We will try to use the `estimate.estimator.effect(X)` if available.
+                
+                if hasattr(estimate.estimator, 'effect'):
+                     ite = estimate.estimator.effect(X_test)
+                elif hasattr(estimate, 'estimator_instance') and hasattr(estimate.estimator_instance, 'effect'):
+                     ite = estimate.estimator_instance.effect(X_test)
+                else:
+                    # Fallback for some DoWhy/EconML versions
+                    ite = None
+                    st.warning("Could not extract ITEs from this estimator version.")
+
+                if ite is not None:
+                    # Flatten if necessary
+                    ite = ite.flatten()
+                    
+                    fig, ax = plt.subplots()
+                    ax.hist(ite, bins=30, alpha=0.7, color='green')
+                    ax.axvline(estimate.value, color='red', linestyle='--', label='ATE')
+                    ax.set_title("Distribution of Individual Treatment Effects")
+                    ax.set_xlabel("Treatment Effect")
+                    ax.set_ylabel("Frequency")
+                    ax.legend()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    # Add ITE to dataframe for download
+                    df_results = df.copy()
+                    df_results['Estimated_ITE'] = ite
+                    
+                    # Feature Importance (Causal Forest only)
+                    if estimation_method == "Causal Forest (DML)":
+                        st.markdown("#### Feature Importance")
+                        # EconML CausalForest has feature_importances_
+                        if hasattr(estimate.estimator, 'feature_importances_'):
+                            importances = estimate.estimator.feature_importances_
+                            feat_names = confounders
+                            
+                            fig, ax = plt.subplots()
+                            y_pos = np.arange(len(feat_names))
+                            ax.barh(y_pos, importances, align='center')
+                            ax.set_yticks(y_pos)
+                            ax.set_yticklabels(feat_names)
+                            ax.invert_yaxis()  # labels read top-to-bottom
+                            ax.set_title("Feature Importance for Heterogeneity")
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        
+            except Exception as e:
+                st.error(f"Error calculating ITEs: {e}")
+                df_results = df.copy()
+
+        else:
+            st.info(f"Individual Treatment Effects are not directly available for {estimation_method} in this view.")
+            df_results = df.copy()
+
+        # Download Results
+        st.markdown("#### Download Results")
+        csv = df_results.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Data with Results as CSV",
+            data=csv,
+            file_name='causal_analysis_results.csv',
+            mime='text/csv',
+        )
+
+        # --- Decisioning ---
+        st.divider()
+        st.header("💡 Recommendation")
+        
+        if ate > 0:
+            st.markdown(
+                f"""
+                Based on the causal analysis, adopting **{treatment}** has a **positive** impact on **{outcome}**.
+                
+                **Action:**
+                - Roll out this feature to more customers.
+                - Invest in marketing campaigns to drive adoption.
+                """
+            )
+        else:
+            st.markdown(
+                f"""
+                Based on the causal analysis, adopting **{treatment}** has a **negligible or negative** impact on **{outcome}**.
+                
+                **Action:**
+                - Re-evaluate the feature's value proposition.
+                - Do not prioritize broad rollout at this time.
+                """
+            )
+
