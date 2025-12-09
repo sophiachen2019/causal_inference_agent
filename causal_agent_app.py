@@ -1,4 +1,5 @@
 import streamlit as st
+import textwrap
 import pandas as pd
 import numpy as np
 import dowhy
@@ -9,6 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from econml.dml import LinearDML, CausalForestDML
 from econml.metalearners import SLearner, TLearner
 import matplotlib.pyplot as plt
+from utils import generate_script
 
 # --- 1. Data Simulation ---
 @st.cache_data
@@ -66,7 +68,8 @@ def simulate_data(n_samples=1000):
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Causal Inference Agent", layout="wide")
-st.title("🤖 Causal Inference Agent: Feature Adoption Impact")
+st.title("🤖 Causal Inference Agent")
+st.markdown("**Builder:** Sophia Chen | **Contact:** sophiachen2012@gmail.com")
 
 # Load Data
 with st.sidebar:
@@ -89,19 +92,74 @@ with st.sidebar:
         st.markdown("### Transformations")
         
         # 1. Missing Value Imputation
-        impute_missing = st.checkbox("Impute Missing Values", value=False, help="Fills numeric columns with mean and categorical with mode.")
+        st.markdown("#### Missing Value Imputation")
+        impute_enable = st.checkbox("Enable Imputation", value=False)
         
-        if impute_missing:
+        if impute_enable:
+            col1, col2 = st.columns(2)
+            with col1:
+                num_impute_method = st.selectbox(
+                    "Numeric Imputation Method",
+                    ["Mean", "Median", "Zero", "Custom Value"]
+                )
+                if num_impute_method == "Custom Value":
+                    num_custom_val = st.number_input("Custom Value (Numeric)", value=0.0)
+            
+            with col2:
+                cat_impute_method = st.selectbox(
+                    "Categorical Imputation Method",
+                    ["Mode", "Missing Indicator", "Custom Value"]
+                )
+                if cat_impute_method == "Custom Value":
+                    cat_custom_val = st.text_input("Custom Value (Categorical)", value="Missing")
+
+            # Apply Imputation
             # Numeric
             num_cols = df.select_dtypes(include=[np.number]).columns
-            df[num_cols] = df[num_cols].fillna(df[num_cols].mean())
+            if len(num_cols) > 0:
+                if num_impute_method == "Mean":
+                    df[num_cols] = df[num_cols].fillna(df[num_cols].mean())
+                elif num_impute_method == "Median":
+                    df[num_cols] = df[num_cols].fillna(df[num_cols].median())
+                elif num_impute_method == "Zero":
+                    df[num_cols] = df[num_cols].fillna(0)
+                elif num_impute_method == "Custom Value":
+                    df[num_cols] = df[num_cols].fillna(num_custom_val)
+            
             # Categorical
             cat_cols = df.select_dtypes(exclude=[np.number]).columns
-            for col in cat_cols:
-                df[col] = df[col].fillna(df[col].mode()[0])
+            if len(cat_cols) > 0:
+                if cat_impute_method == "Mode":
+                    for col in cat_cols:
+                        if not df[col].mode().empty:
+                            df[col] = df[col].fillna(df[col].mode()[0])
+                elif cat_impute_method == "Missing Indicator":
+                    df[cat_cols] = df[cat_cols].fillna("Missing")
+                elif cat_impute_method == "Custom Value":
+                    df[cat_cols] = df[cat_cols].fillna(cat_custom_val)
+            
             st.info("Missing values imputed.")
 
-        # 2. Log Transformation
+        # 2. Winsorization
+        st.markdown("#### Winsorization (Outlier Handling)")
+        winsorize_enable = st.checkbox("Enable Winsorization", value=False)
+        
+        if winsorize_enable:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            winsorize_cols = st.multiselect("Select columns to winsorize", numeric_cols, default=[])
+            
+            if winsorize_cols:
+                percentile = st.slider("Percentile Threshold", min_value=0.01, max_value=0.25, value=0.05, step=0.01, help="Clips values at the p-th and (1-p)-th percentiles.")
+                
+                for col in winsorize_cols:
+                    lower = df[col].quantile(percentile)
+                    upper = df[col].quantile(1 - percentile)
+                    df[col] = df[col].clip(lower=lower, upper=upper)
+                
+                st.info(f"Winsorization applied to {', '.join(winsorize_cols)} at {percentile*100:.0f}% threshold.")
+
+        # 3. Log Transformation
+        st.markdown("#### Log Transformation")
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         log_transform_cols = st.multiselect("Apply Log Transformation (np.log1p)", numeric_cols, help="Applies log(x+1) to selected columns.")
         
@@ -114,7 +172,8 @@ with st.sidebar:
                     df[col] = np.log1p(df[col])
             st.info(f"Log transformation applied to: {', '.join(log_transform_cols)}")
 
-        # 3. Standardization
+        # 4. Standardization
+        st.markdown("#### Standardization")
         standardize_cols = st.multiselect("Standardize Variables (StandardScaler)", numeric_cols, help="Scales variables to have mean=0 and std=1.")
         
         if standardize_cols:
@@ -139,7 +198,7 @@ with st.sidebar:
     confounders = st.multiselect("Confounders (Common Causes)", df.columns, default=default_confounders)
     
     # Optional Inputs for Advanced Methods
-    instrument = st.selectbox("Instrument (for IV)", [None] + list(df.columns), index=get_index(df.columns, 'Marketing_Nudge', 3) + 1 if 'Marketing_Nudge' in df.columns else 0) 
+    # instrument = st.selectbox("Instrument (for IV)", [None] + list(df.columns), index=get_index(df.columns, 'Marketing_Nudge', 3) + 1 if 'Marketing_Nudge' in df.columns else 0) 
     time_period = st.selectbox("Time Period (for DiD)", [None] + list(df.columns), index=get_index(df.columns, 'Quarter', 4) + 1 if 'Quarter' in df.columns else 0)
     
     estimation_method = st.selectbox(
@@ -151,14 +210,16 @@ with st.sidebar:
             "Meta-Learner: S-Learner",
             "Meta-Learner: T-Learner",
             "Causal Forest (DML)",
-            "Instrumental Variables (IV)",
             "Difference-in-Differences (DiD)"
         ]
     )
 
+    st.markdown("#### Bootstrapping Settings")
+    n_iterations = st.number_input("Bootstrap Iterations", min_value=10, max_value=500, value=50, step=10, help="Number of resampling iterations for SE estimation.")
+
     run_analysis = st.button("Run Causal Analysis", type="primary")
 
-st.markdown("### Simulated B2B SaaS Data Preview")
+st.markdown("### Data Preview")
 st.dataframe(df.head())
 
 st.markdown("#### Data Summary & Distributions")
@@ -201,7 +262,7 @@ if run_analysis:
                 treatment=treatment,
                 outcome=outcome,
                 common_causes=confounders,
-                instruments=[instrument] if instrument else None,
+                instruments=None,
                 effect_modifiers=confounders
             )
         
@@ -353,18 +414,10 @@ if run_analysis:
 
             elif estimation_method == "Instrumental Variables (IV)":
                 st.markdown("#### Method: Instrumental Variables (IV)")
-                if not instrument:
-                    st.error("Please select an Instrument in the sidebar.")
-                    st.stop()
+                # Removed IV support
+                st.error("Instrumental Variables (IV) method is not supported in this version.")
+                st.stop()
                 
-                st.markdown("IV uses an instrument ($Z$) that affects treatment ($T$) but has no direct effect on outcome ($Y$) except through $T$.")
-                st.latex(r"ATE = \frac{Cov(Y, Z)}{Cov(T, Z)}")
-                
-                estimate = model.estimate_effect(
-                    identified_estimand,
-                    method_name="iv.instrumental_variable"
-                )
-
             elif estimation_method == "Difference-in-Differences (DiD)":
                 st.markdown("#### Method: Difference-in-Differences (DiD)")
                 if not time_period:
@@ -385,8 +438,179 @@ if run_analysis:
                 )
                 st.info("Note: Using Linear Regression with interaction terms to approximate DiD.")
             
+            
         ate = estimate.value
-        st.metric(label="Average Treatment Effect (ATE)", value=f"${ate:.2f}")
+        
+        # --- Extract Standard Error & CI ---
+        se = None
+        ci = None
+        
+        try:
+            # 1. Linear Regression (DiD approximation)
+            if estimation_method == "Difference-in-Differences (DiD)":
+                if hasattr(estimate, 'estimator') and hasattr(estimate.estimator, 'model'):
+                    model_res = estimate.estimator.model
+                    if hasattr(model_res, 'bse'):
+                        # Try to find the treatment variable in params
+                        # Case 1: Exact match
+                        if treatment in model_res.params.index:
+                            se = model_res.bse[treatment]
+                            conf_int = model_res.conf_int().loc[treatment]
+                            ci = (conf_int[0], conf_int[1])
+                        # Case 2: Contains match (e.g. T[T.1])
+                        else:
+                            for param_name in model_res.params.index:
+                                if treatment in param_name:
+                                    se = model_res.bse[param_name]
+                                    conf_int = model_res.conf_int().loc[param_name]
+                                    ci = (conf_int[0], conf_int[1])
+                                    break
+                        
+                        # Case 3: Generic name 'x1' (common in some DoWhy versions/inputs)
+                        # We assume x1 is treatment if it's the first non-const variable and we haven't found it yet
+                        if se is None and 'x1' in model_res.params.index:
+                             se = model_res.bse['x1']
+                             conf_int = model_res.conf_int().loc['x1']
+                             ci = (conf_int[0], conf_int[1])
+            
+            # 2. Other Methods (Check generic attributes)
+            if se is None:
+                if hasattr(estimate, 'stderr'):
+                    se = estimate.stderr
+                
+                if hasattr(estimate, 'get_confidence_intervals'):
+                    try:
+                        ci_res = estimate.get_confidence_intervals(confidence_level=0.95)
+                        if ci_res is not None:
+                            # Handle different return formats (tuple, array, etc.)
+                            if isinstance(ci_res, (list, tuple, np.ndarray)) and len(ci_res) == 2:
+                                ci = (float(ci_res[0]), float(ci_res[1]))
+                    except Exception:
+                        pass # CI extraction failed
+                        
+        except Exception as e:
+            st.warning(f"Could not extract Standard Error: {e}")
+
+        # --- Bootstrapping for SE ---
+        # Bootstrapping is now default and configured in sidebar
+        
+        bootstrap_estimates = []
+        progress_bar = st.progress(0)
+        
+        with st.spinner(f"Running {n_iterations} bootstrap iterations..."):
+            for i in range(n_iterations):
+                # Resample with replacement
+                df_resampled = df.sample(frac=1, replace=True, random_state=i) # Use i as seed for reproducibility of the set
+                
+                # Re-define model on resampled data
+                # Note: We must re-instantiate CausalModel to avoid state leakage
+                model_boot = CausalModel(
+                    data=df_resampled,
+                    treatment=treatment,
+                    outcome=outcome,
+                    common_causes=confounders,
+                    instruments=None,
+                    effect_modifiers=confounders
+                )
+                
+                identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)
+                
+                # Re-estimate
+                # We need to use the exact same method and params
+                # This duplication is a bit verbose but necessary to ensure same config
+                try:
+                    if estimation_method == "Double Machine Learning (LinearDML)":
+                        est_boot = model_boot.estimate_effect(
+                            identified_estimand_boot,
+                            method_name="backdoor.econml.dml.LinearDML",
+                            method_params={
+                                "init_params": {
+                                    "model_y": RandomForestRegressor(random_state=42),
+                                    "model_t": RandomForestClassifier(random_state=42),
+                                    "discrete_treatment": True,
+                                    "random_state": 42
+                                },
+                                "fit_params": {}
+                            }
+                        )
+                    elif estimation_method == "Propensity Score Matching":
+                            est_boot = model_boot.estimate_effect(
+                            identified_estimand_boot,
+                            method_name="backdoor.propensity_score_matching"
+                        )
+                    elif estimation_method == "Inverse Propensity Weighting (IPTW)":
+                            est_boot = model_boot.estimate_effect(
+                            identified_estimand_boot,
+                            method_name="backdoor.propensity_score_weighting"
+                        )
+                    elif "Meta-Learner" in estimation_method:
+                        learner_type = estimation_method.split(": ")[1]
+                        if learner_type == "S-Learner":
+                            method_name = "backdoor.econml.metalearners.SLearner"
+                            init_params = {"overall_model": RandomForestRegressor(random_state=42)}
+                        else:
+                            method_name = "backdoor.econml.metalearners.TLearner"
+                            init_params = {"models": RandomForestRegressor(random_state=42)}
+                        
+                        est_boot = model_boot.estimate_effect(
+                            identified_estimand_boot,
+                            method_name=method_name,
+                            method_params={
+                                "init_params": init_params,
+                                "fit_params": {}
+                            }
+                        )
+                    elif estimation_method == "Causal Forest (DML)":
+                            est_boot = model_boot.estimate_effect(
+                            identified_estimand_boot,
+                            method_name="backdoor.econml.dml.CausalForestDML",
+                            method_params={
+                                "init_params": {
+                                    "model_y": RandomForestRegressor(random_state=42),
+                                    "model_t": RandomForestClassifier(random_state=42),
+                                    "discrete_treatment": True,
+                                    "random_state": 42
+                                },
+                                "fit_params": {}
+                            }
+                        )
+                    elif estimation_method == "Instrumental Variables (IV)":
+                            # Removed IV support
+                            continue # Skip this iteration if IV is selected
+                    elif estimation_method == "Difference-in-Differences (DiD)":
+                            est_boot = model_boot.estimate_effect(
+                            identified_estimand_boot,
+                            method_name="backdoor.linear_regression",
+                            test_significance=False # Speed up
+                        )
+                    
+                    bootstrap_estimates.append(est_boot.value)
+                
+                except Exception:
+                    pass # Skip failed iterations
+                
+                progress_bar.progress((i + 1) / n_iterations)
+        
+        if len(bootstrap_estimates) > 0:
+            se = np.std(bootstrap_estimates)
+            ci = (np.percentile(bootstrap_estimates, 2.5), np.percentile(bootstrap_estimates, 97.5))
+            st.success(f"Bootstrapping complete. Used {len(bootstrap_estimates)} successful iterations.")
+        else:
+            st.error("Bootstrapping failed for all iterations.")
+
+        # Display Metrics
+        col_ate, col_se = st.columns(2)
+        with col_ate:
+            st.metric(label="Average Treatment Effect (ATE)", value=f"${ate:.2f}")
+        with col_se:
+            if se is not None:
+                st.metric(label="Standard Error (SE)", value=f"{se:.2f}")
+            else:
+                st.metric(label="Standard Error (SE)", value="N/A", help="SE not available for this method/configuration.")
+        
+        if ci is not None:
+            st.caption(f"**95% Confidence Interval:** [{ci[0]:.2f}, {ci[1]:.2f}]")
+            st.caption("(Computed via Bootstrapping)")
         
         st.info(
             f"**Interpretation:** On average, `{treatment}` increases `{outcome}` by **${ate:.2f}** "
@@ -507,28 +731,53 @@ if run_analysis:
             mime='text/csv',
         )
 
+        # --- Export Analysis Script ---
+        st.markdown("#### Export Analysis Script")
+        
+
+
+        # Generate the script
+        # We need to pass all current state variables
+        # Note: Some variables like 'percentile' are only defined if winsorize_enable is True
+        # We'll use defaults or current values.
+        
+        # Helper to safely get variable or default
+        def safe_get(var_name, default):
+            return locals().get(var_name, default)
+
+        analysis_script = generate_script(
+            data_source=data_source,
+            treatment=treatment,
+            outcome=outcome,
+            confounders=confounders,
+            time_period=time_period,
+            estimation_method=estimation_method,
+            impute_enable=impute_enable,
+            num_impute_method=num_impute_method if impute_enable else None,
+            num_custom_val=num_custom_val if impute_enable and num_impute_method == "Custom Value" else 0.0,
+            cat_impute_method=cat_impute_method if impute_enable else None,
+            cat_custom_val=cat_custom_val if impute_enable and cat_impute_method == "Custom Value" else "Missing",
+            winsorize_enable=winsorize_enable,
+            winsorize_cols=winsorize_cols if winsorize_enable else [],
+            percentile=percentile if winsorize_enable else 0.05,
+            log_transform_cols=log_transform_cols,
+            standardize_cols=standardize_cols,
+            n_iterations=n_iterations
+        )
+        
+        st.download_button(
+            label="Download Python Script",
+            data=analysis_script,
+            file_name='reproduce_analysis.py',
+            mime='text/x-python',
+        )
+
         # --- Decisioning ---
         st.divider()
         st.header("💡 Recommendation")
         
         if ate > 0:
-            st.markdown(
-                f"""
-                Based on the causal analysis, adopting **{treatment}** has a **positive** impact on **{outcome}**.
-                
-                **Action:**
-                - Roll out this feature to more customers.
-                - Invest in marketing campaigns to drive adoption.
-                """
-            )
+            st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **positive** impact on **{outcome}**.\\n\\n**Action:**\\n- Roll out this feature to more customers.\\n- Invest in marketing campaigns to drive adoption.")
         else:
-            st.markdown(
-                f"""
-                Based on the causal analysis, adopting **{treatment}** has a **negligible or negative** impact on **{outcome}**.
-                
-                **Action:**
-                - Re-evaluate the feature's value proposition.
-                - Do not prioritize broad rollout at this time.
-                """
-            )
+            st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **negligible or negative** impact on **{outcome}**.\\n\\n**Action:**\\n- Re-evaluate the value proposition.\\n- Do not prioritize broad rollout at this time.")
 
