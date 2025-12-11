@@ -69,7 +69,7 @@ def simulate_data(n_samples=1000):
 # --- Streamlit UI ---
 st.set_page_config(page_title="Causal Inference Agent", layout="wide")
 st.title("🤖 Causal Inference Agent")
-st.markdown("**Builder:** Sophia Chen |**Version:** v1 | **Email:** sophiachen2012@gmail.com | **Medium:** https://medium.com/@sophiachen2012")
+st.markdown("**Builder:** Sophia Chen | **Version:** v1 | **Email:** sophiachen2012@gmail.com | **Medium:** https://medium.com/@sophiachen2012")
 
 # Load Data
 with st.sidebar:
