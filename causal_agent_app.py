@@ -393,7 +393,6 @@ with tab_causal:
 # TAB 1: User Guide
 # ==========================================
 with tab_guide:
-    ## st.header("User Guide")
     
     st.markdown("""
     ## Welcome to the Causal Agent App
