@@ -4,7 +4,9 @@ import numpy as np
 def generate_script(data_source, treatment, outcome, confounders, time_period, estimation_method, 
                     impute_enable, num_impute_method, num_custom_val, cat_impute_method, cat_custom_val,
                     winsorize_enable, winsorize_cols, percentile,
-                    log_transform_cols, standardize_cols, n_iterations):
+                    log_transform_cols, standardize_cols, n_iterations,
+                    rd_running_variable=None, rd_cutoff=0.0, rd_bandwidth=0.0,
+                    control_val=None, treat_val=None):
     
     script = f"""import pandas as pd
 import numpy as np
@@ -115,31 +117,60 @@ print("Standardization applied.")
 
     script += f"""
 # --- 3. Causal Model ---
-treatment = '{treatment}'
+# --- 3. Causal Model ---
+"""
+    if control_val is not None and treat_val is not None:
+        script += f"""
+# Encoding Categorical Treatment
+df['Treatment_Encoded'] = np.nan
+df.loc[df['{treatment}'] == '{control_val}', 'Treatment_Encoded'] = 0
+df.loc[df['{treatment}'] == '{treat_val}', 'Treatment_Encoded'] = 1
+df = df.dropna(subset=['Treatment_Encoded'])
+treatment = 'Treatment_Encoded'
+"""
+    else:
+        script += f"treatment = '{treatment}'\n"
+
+    script += f"""
 outcome = '{outcome}'
 confounders = {confounders}
 instrument = None
 effect_modifiers = confounders # Using confounders as effect modifiers for heterogeneity
+"""
 
+    if estimation_method == "Regression Discontinuity" and rd_running_variable:
+        script += f"""
+# Regression Discontinuity Setup
+df['RD_Indicator'] = (df['{rd_running_variable}'] >= {rd_cutoff}).astype(int)
+instrument = ['RD_Indicator']
+print(f"Created instrument 'RD_Indicator' based on cutoff {rd_cutoff} for {rd_running_variable}.")
+"""
+
+    script += """
 model = CausalModel(
     data=df,
     treatment=treatment,
     outcome=outcome,
     common_causes=confounders,
-    instruments=None,
+    instruments=instrument,
     effect_modifiers=effect_modifiers
 )
 
 # --- 4. Identify Effect ---
-identified_estimand = model.identify_effect(proceed_when_unidentifiable=True)
-print("Effect Identified")
+"""
+    if estimation_method == "Regression Discontinuity":
+        script += "identified_estimand = model.identify_effect(proceed_when_unidentifiable=True)\n"
+    else:
+        script += "identified_estimand = model.identify_effect(proceed_when_unidentifiable=True)\n"
+        
+    script += """print("Effect Identified")
 
 # --- 5. Estimate Effect ---
-estimation_method = "{estimation_method}"
-print(f"Estimating effect using {{estimation_method}}...")
-
 """
-    script += "def estimate_causal_effect(model, identified_estimand):\n"
+    script += f'estimation_method = "{estimation_method}"\n'
+    script += 'print(f"Estimating effect using {estimation_method}...")\n\n'
+
+    script += "def estimate_causal_effect(model, identified_estimand, test_significance=True):\n"
     script += "    estimate = None\n"
 
     # Logic for estimation methods (simplified mapping from app)
@@ -166,7 +197,11 @@ print(f"Estimating effect using {{estimation_method}}...")
     elif estimation_method == "Instrumental Variables (IV)":
         script += "    estimate = model.estimate_effect(identified_estimand, method_name='iv.instrumental_variable')\n"
     elif estimation_method == "Difference-in-Differences (DiD)":
-        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.linear_regression', test_significance=True)\n"
+        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.linear_regression', test_significance=test_significance)\n"
+    elif estimation_method == "Regression Discontinuity":
+        script += "    estimate = model.estimate_effect(identified_estimand, method_name='iv.instrumental_variable')\n"
+    elif estimation_method == "A/B Test (Difference in Means)":
+        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.linear_regression', test_significance=test_significance)\n"
     
     script += "    return estimate\n"
 
@@ -193,11 +228,15 @@ print(f"Estimating effect using {{estimation_method}}...")
     script += f"            treatment='{treatment}',\n"
     script += f"            outcome='{outcome}',\n"
     script += f"            common_causes={confounders},\n"
-    script += "            instruments=None,\n"
+    script += "            instruments=instrument,\n"
     script += f"            effect_modifiers={confounders}\n"
     script += "        )\n"
-    script += "        identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)\n"
-    script += "        est_boot = estimate_causal_effect(model_boot, identified_estimand_boot)\n"
+    
+    if estimation_method == "Regression Discontinuity":
+        script += "        identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)\n"
+    else:
+        script += "        identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)\n"
+        script += "        est_boot = estimate_causal_effect(model_boot, identified_estimand_boot, test_significance=False)\n"
     script += "        bootstrap_estimates.append(est_boot.value)\n"
     script += "    except Exception:\n"
     script += "        pass\n"
