@@ -1,16 +1,16 @@
 import streamlit as st
-import textwrap
+
 import pandas as pd
 import numpy as np
 import dowhy
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.linear_model import LinearRegression, LogisticRegression, LassoCV
+
 from sklearn.preprocessing import StandardScaler
 from econml.dml import LinearDML, CausalForestDML
-from econml.metalearners import SLearner, TLearner
+
 import matplotlib.pyplot as plt
 from dowhy import CausalModel
-import dowhy.datasets
+
 from scipy import stats
 import statsmodels.api as sm
 
@@ -78,14 +78,40 @@ def simulate_data(n_samples=1000):
 # --- Streamlit UI ---
 st.set_page_config(page_title="Causal Inference Agent", layout="wide")
 st.title("🤖 Causal Inference Agent")
-st.markdown("**Builder:** Sophia Chen | **Version:** v1 | **Contact:** sophiachen2012@gmail.com | **Medium:** https://medium.com/@sophiachen2012")
+st.markdown("**Builder:** Sophia Chen | **Contact:** sophiachen2012@gmail.com | **Medium:** https://medium.com/@sophiachen2012")
+
+def get_app_metadata():
+    """Parses metadata from requirements.txt"""
+    history = []
+    try:
+        with open("requirements.txt", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("# Release:"):
+                    # Format: # Release: <Version> | <Date> | <Note>
+                    parts = line.split("|")
+                    if len(parts) >= 3:
+                        version = parts[0].split(":", 1)[1].strip()
+                        date = parts[1].strip()
+                        note = parts[2].strip()
+                        history.append({
+                            "Version": version,
+                            "Release Date": date,
+                            "Release Note": note
+                        })
+    except FileNotFoundError:
+        pass
+    return history
+
+history = get_app_metadata()
+latest_version = history[0] if history else {"Version": "Unknown", "Release Date": "Unknown", "Release Note": "Unknown"}
 
 # Load Data
 # --- Tabs Setup ---
-tab_eda, tab_causal = st.tabs(["Exploratory Analysis", "Causal Analysis"])
+tab_guide, tab_eda, tab_causal = st.tabs(["User Guide", "Exploratory Analysis", "Causal Analysis"])
 
 # ==========================================
-# TAB 1: Exploratory Analysis
+# TAB 2: Exploratory Analysis
 # ==========================================
 with tab_eda:
     st.header("Exploratory Data Analysis")
@@ -300,7 +326,7 @@ with tab_eda:
 
 
 # ==========================================
-# TAB 2: Causal Analysis
+# TAB 3: Causal Analysis
 # ==========================================
 with tab_causal:
     st.header("Causal Analysis Configuration")
@@ -324,10 +350,6 @@ with tab_causal:
             "Difference-in-Differences (DiD)"
         ]
     )
-
-    rd_running_variable = None
-    rd_cutoff = 0.0
-    rd_bandwidth = 0.0
 
     treatment = st.selectbox("Treatment (Action)", df.columns, index=get_index(df.columns, 'Feature_Adoption', 2))
     
@@ -365,6 +387,81 @@ with tab_causal:
     n_iterations = st.number_input("Bootstrap Iterations", min_value=10, max_value=500, value=50, step=10, help="Number of resampling iterations for SE estimation.")
 
     run_analysis = st.button("Run Causal Analysis", type="primary")
+
+# ==========================================
+# ==========================================
+# TAB 1: User Guide
+# ==========================================
+with tab_guide:
+    st.header("User Guide")
+    
+    st.markdown("""
+    ## Welcome to the Causal Agent App
+    This application is designed to help you estimate causal effects from observational and A/B testing data using advanced statistical methods.
+    
+    ### 1. Data Preparation
+    **Simulated Data**: If you don't have a dataset, select "Simulated Data" to explore the app's features with a generated dataset.
+    
+    **Upload Data**: Upload your own CSV file. Ensure your data contains:
+    - **Treatment Column**: The variable indicating the intervention (e.g., `Feature_Adoption`, `Marketing_Campaign`).
+    - **Outcome Column**: The metric you want to influence (e.g., `Account_Value`, `Conversion_Rate`).
+    - **Confounders**: Variables that influence both treatment and outcome (e.g., `Customer_Segment`, `Region`).
+    
+    **Preprocessing**:
+    - **Imputation**: Fill missing values using Mean, Median, Mode, or Custom values.
+    - **Winsorization**: Cap extreme outliers to reduce noise.
+    - **Log Transformation**: Apply log transformation to skewed variables (e.g., Revenue) to normalize their distribution.
+    - **Standardization**: Scale variables to have mean 0 and variance 1, useful for distance-based methods like Matching.
+    
+    ### 2. Exploratory Analysis
+    Use the **Chart Builder** in the first tab to visualize your data.
+    - **Aggregation**: Check "Aggregate Data" to see summary statistics (e.g., Average Revenue by Region).
+    - **Distributions**: Use Histograms or Box Plots to understand the spread of your variables.
+    
+    ### 3. Causal Analysis
+    Go to the "Causal Analysis" tab to estimate effects.
+    
+    #### Step 1: Define Causal Graph
+    Select your Treatment, Outcome, and Confounders. This tells the app what relationship to measure and what to control for.
+    
+    #### Step 2: Choose Estimation Method
+    | Method | When to use? |
+    | :--- | :--- |
+    | **A/B Test (Diff-in-Means)** | When you have a randomized controlled trial (RCT). |
+    | **Diff-in-Differences (DiD)** | When you have data over time (Pre/Post) and a Control group. Requires a `Time Period` column. |
+    | **Propensity Score Matching** | To create a synthetic control group by matching similar users. |
+    | **Inverse Propensity Weighting (IPTW)** | Weight observations by inverse probability of treatment to create a pseudo-population. |
+    | **Double Machine Learning (LinearDML)** | For high-dimensional controls where you want a linear treatment effect. |
+    | **Causal Forest (DML)** | For estimating non-linear Heterogeneous Treatment Effects (HTE). |
+    | **Meta-Learners (S/T-Learner)** | For estimating Heterogeneous Treatment Effects (HTE) using Machine Learning. |
+    
+    #### Step 3: Interpret Results
+    - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
+    - **Heterogeneity (HTE)**:
+        - **Linear Methods**: Look for the "Interaction Coefficient". A significant p-value (< 0.05) means the effect varies by that feature.
+        - **CATE Methods**: Look for the "Effect Modification" table. It shows which features drive the differences in individual effects.
+    - **Refutation**: Robustness checks.
+        - **Placebo Treatment**: Should be close to 0.
+        - **Random Common Cause**: Should not change the estimate significantly.
+        
+    ### 4. Exporting Code
+    Click **Download Python Script** to get a standalone Python file containing the full analysis code. You can run this locally to reproduce the results or integrate it into your pipeline.
+    
+    ### 5. Version History
+
+    """)
+    
+    if history:
+        # Display Latest Version
+        st.markdown(f"**Latest Version:** {latest_version['Version']} ({latest_version['Release Date']})")
+        st.info(f"**Release Note:** {latest_version['Release Note']}")
+        
+        # Display History Table
+        with st.expander("See Full History"):
+            history_df = pd.DataFrame(history)
+            st.table(history_df)
+    else:
+        st.warning("No version history found.")
 
 if run_analysis:
     with tab_causal: # Ensure results render in the Causal Tab
@@ -872,6 +969,8 @@ if run_analysis:
 
             # --- Step 5: Explore Results ---
             st.subheader("5. Explore Results")
+            
+            hte_feature = None
         
             # Check if method supports Heterogeneous Treatment Effects (CATE)
             cate_methods = [
@@ -938,19 +1037,167 @@ if run_analysis:
                                 ax.set_yticklabels(feat_names)
                                 ax.invert_yaxis()  # labels read top-to-bottom
                                 ax.set_title("Feature Importance for Heterogeneity")
+                                ax.set_title("Feature Importance for Heterogeneity")
                                 st.pyplot(fig)
                                 plt.close(fig)
+
+                        # --- Universal HTE Summary ---
+                        st.markdown("#### Heterogeneity Analysis (Effect Modification)")
+                        st.markdown("Analysis of how covariates influence the estimated Individual Treatment Effects (ITE).")
                         
+                        # Allow heterogeneity analysis on any column (except treatment/outcome/time)
+                        valid_covariates_cate = [c for c in df.columns if c not in [treatment, outcome, time_period, 'Treatment_Encoded']]
+                        
+                        if not valid_covariates_cate:
+                            st.warning("No covariates available for heterogeneity analysis.")
+                        else:
+                            st.markdown("**Analyzing heterogeneity for all available features...**")
+                            hte_results_cate = []
+                            progress_bar_cate = st.progress(0)
+                            
+                            # Create a temporary dataframe for regression
+                            df_ite = df.copy()
+                            df_ite['ITE'] = ite
+                            
+                            for i, feature in enumerate(valid_covariates_cate):
+                                try:
+                                    # Simple Linear Regression: ITE ~ Feature
+                                    X_feat = sm.add_constant(df_ite[feature])
+                                    y_feat = df_ite['ITE']
+                                    
+                                    model_feat = sm.OLS(y_feat, X_feat).fit()
+                                    
+                                    coef = model_feat.params[feature]
+                                    pval = model_feat.pvalues[feature]
+                                    
+                                    hte_results_cate.append({
+                                        "Feature": feature,
+                                        "Effect Modification (Slope)": coef,
+                                        "P-value": pval,
+                                        "Significant (p<0.05)": "Yes" if pval < 0.05 else "No"
+                                    })
+                                except Exception as e:
+                                    continue
+                                
+                                progress_bar_cate.progress((i + 1) / len(valid_covariates_cate))
+                            
+                            progress_bar_cate.empty()
+                            
+                            if hte_results_cate:
+                                hte_df_cate = pd.DataFrame(hte_results_cate).sort_values("P-value")
+                                st.dataframe(hte_df_cate.style.format({
+                                    "Effect Modification (Slope)": "{:.4f}",
+                                    "P-value": "{:.4f}"
+                                }))
+                                
+                                # Highlight significant findings
+                                sig_features_cate = hte_df_cate[hte_df_cate["P-value"] < 0.05]
+                                if not sig_features_cate.empty:
+                                    best_feat_cate = sig_features_cate.iloc[0]["Feature"]
+                                    st.success(f"Found significant heterogeneity! The treatment effect is most strongly modified by **{best_feat_cate}**.")
+                                else:
+                                    st.info("No significant heterogeneity found across the analyzed features.")
+                            else:
+                                st.warning("Could not compute heterogeneity for any feature.")
+                        
+
                 except Exception as e:
                     st.error(f"Error calculating ITEs: {e}")
                     df_results = df.copy()
+
+            elif estimation_method in ["A/B Test (Difference in Means)", "Difference-in-Differences (DiD)"]:
+                st.markdown("#### Heterogeneity Analysis")
+                st.markdown("Analyze how the treatment effect varies across different subgroups.")
+                
+                analyze_hte = True # Always enabled by default
+                
+                if analyze_hte:
+                    # Allow heterogeneity analysis on any column (except treatment/outcome/time)
+                    valid_covariates = [c for c in df.columns if c not in [treatment, outcome, time_period, 'Treatment_Encoded', 'DiD_Interaction', 'DiD_Interaction', 'HTE_Interaction']]
+                    
+                    if not valid_covariates:
+                        st.warning("No covariates available for heterogeneity analysis.")
+                        hte_feature = None
+                        hte_results = []
+                    else:
+                        st.markdown("**Analyzing heterogeneity for all available features...**")
+                        hte_results = []
+                        
+                        # Progress bar
+                        progress_bar = st.progress(0)
+                        
+                        for i, feature in enumerate(valid_covariates):
+                            try:
+                                if estimation_method == "A/B Test (Difference in Means)":
+                                    # Model: Y ~ T + X + T*X + Confounders
+                                    df['HTE_Interaction'] = df[treatment] * df[feature]
+                                    X_hte = df[[treatment, feature, 'HTE_Interaction']]
+                                    other_confounders = [c for c in confounders if c != feature]
+                                    if other_confounders:
+                                        X_hte = pd.concat([X_hte, df[other_confounders]], axis=1)
+                                    X_hte = sm.add_constant(X_hte)
+                                    y_hte = df[outcome]
+                                    hte_model = sm.OLS(y_hte, X_hte).fit()
+                                    
+                                    coef = hte_model.params['HTE_Interaction']
+                                    pval = hte_model.pvalues['HTE_Interaction']
+                                    
+                                elif estimation_method == "Difference-in-Differences (DiD)":
+                                    # Model: Y ~ T + Post + T*Post + X + T*X + Post*X + T*Post*X + Confounders
+                                    df['T_X'] = df[treatment] * df[feature]
+                                    df['Post_X'] = df[time_period] * df[feature]
+                                    df['Triple_Interaction'] = df['DiD_Interaction'] * df[feature]
+                                    
+                                    X_hte = df[[treatment, time_period, 'DiD_Interaction', feature, 'T_X', 'Post_X', 'Triple_Interaction']]
+                                    other_confounders = [c for c in confounders if c != feature]
+                                    if other_confounders:
+                                        X_hte = pd.concat([X_hte, df[other_confounders]], axis=1)
+                                    X_hte = sm.add_constant(X_hte)
+                                    y_hte = df[outcome]
+                                    hte_model = sm.OLS(y_hte, X_hte).fit()
+                                    
+                                    coef = hte_model.params['Triple_Interaction']
+                                    pval = hte_model.pvalues['Triple_Interaction']
+                                
+                                hte_results.append({
+                                    "Feature": feature,
+                                    "Interaction Coefficient": coef,
+                                    "P-value": pval,
+                                    "Significant (p<0.05)": "Yes" if pval < 0.05 else "No"
+                                })
+                            except Exception as e:
+                                # Skip if error (e.g. collinearity)
+                                continue
+                            
+                            progress_bar.progress((i + 1) / len(valid_covariates))
+                        
+                        progress_bar.empty()
+                        
+                        if hte_results:
+                            hte_df = pd.DataFrame(hte_results).sort_values("P-value")
+                            st.dataframe(hte_df.style.format({
+                                "Interaction Coefficient": "{:.4f}",
+                                "P-value": "{:.4f}"
+                            }))
+                            
+                            # Highlight significant findings
+                            sig_features = hte_df[hte_df["P-value"] < 0.05]
+                            if not sig_features.empty:
+                                best_feat = sig_features.iloc[0]["Feature"]
+                                st.success(f"Found significant heterogeneity! The treatment effect varies most significantly by **{best_feat}**.")
+                                hte_feature = best_feat # Set hte_feature for script export
+                            else:
+                                st.info("No significant heterogeneity found across the analyzed features.")
+                                hte_feature = None # No single best feature
+                        else:
+                            st.warning("Could not compute heterogeneity for any feature.")
+
+                df_results = df.copy()
 
             else:
                 st.info(f"Individual Treatment Effects are not directly available for {estimation_method} in this view.")
                 df_results = df.copy()
 
-            # Download Results
-            st.markdown("#### Download Results")
             csv = df_results.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="Download Data with Results as CSV",
@@ -973,7 +1220,7 @@ if run_analysis:
             def safe_get(var_name, default):
                 return locals().get(var_name, default)
 
-            analysis_script = generate_script(
+            script = generate_script(
                 data_source=data_source,
                 treatment=treatment,
                 outcome=outcome,
@@ -992,21 +1239,22 @@ if run_analysis:
                 standardize_cols=standardize_cols,
                 n_iterations=n_iterations,
                 control_val=safe_get('control_val', None),
-                treat_val=safe_get('treat_val', None)
+                treat_val=safe_get('treat_val', None),
+                hte_features=valid_covariates if 'valid_covariates' in locals() else (valid_covariates_cate if 'valid_covariates_cate' in locals() else None)
             )
         
             st.download_button(
                 label="Download Python Script",
-                data=analysis_script,
-                file_name='reproduce_analysis.py',
-                mime='text/x-python',
+                data=script,
+                file_name="causal_analysis.py",
+                mime="text/x-python"
             )
 
-            # --- Decisioning ---
-            st.divider()
-            st.header("💡 Recommendation")
-        
-            if ate > 0:
-                st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **positive** impact on **{outcome}**.\\n\\n**Action:**\\n- Roll out this feature to more customers.\\n- Invest in marketing campaigns to drive adoption.")
-            else:
-                st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **negligible or negative** impact on **{outcome}**.\\n\\n**Action:**\\n- Re-evaluate the value proposition.\\n- Do not prioritize broad rollout at this time.")
+        # --- Decisioning ---
+        st.divider()
+        st.header("💡 Recommendation")
+    
+        if ate > 0:
+            st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **positive** impact on **{outcome}**.\\n\\n**Action:**\\n- Roll out this feature to more customers.\\n- Invest in marketing campaigns to drive adoption.")
+        else:
+            st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **negligible or negative** impact on **{outcome}**.\\n\\n**Action:**\\n- Re-evaluate the value proposition.\\n- Do not prioritize broad rollout at this time.")
