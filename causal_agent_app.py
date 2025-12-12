@@ -13,7 +13,7 @@ from dowhy import CausalModel
 import dowhy.datasets
 from scipy import stats
 import statsmodels.api as sm
-from linearmodels.panel import PanelOLS
+
 
 # Import custom utils with explicit reload to ensure updates are picked up
 import causal_utils
