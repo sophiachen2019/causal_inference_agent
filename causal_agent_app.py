@@ -3,14 +3,22 @@ import textwrap
 import pandas as pd
 import numpy as np
 import dowhy
-from dowhy import CausalModel
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.linear_model import LinearRegression, LogisticRegression, LassoCV
 from sklearn.preprocessing import StandardScaler
 from econml.dml import LinearDML, CausalForestDML
 from econml.metalearners import SLearner, TLearner
 import matplotlib.pyplot as plt
+from dowhy import CausalModel
+import dowhy.datasets
 from scipy import stats
+import statsmodels.api as sm
+from linearmodels.panel import PanelOLS
+
+# Import custom utils with explicit reload to ensure updates are picked up
+import causal_utils
+import importlib
+importlib.reload(causal_utils)
 from causal_utils import generate_script
 
 # --- 1. Data Simulation ---
@@ -228,34 +236,66 @@ with tab_eda:
     with col_color:
         color_var = st.selectbox("Color/Group (Optional)", [None] + list(df.columns))
 
+    # Aggregation Options
+    enable_aggregation = st.checkbox("Aggregate Data")
+    if enable_aggregation:
+        agg_method = st.selectbox("Aggregation Method", ["Mean", "Sum", "Count", "Median", "Min", "Max"])
+        
+        if y_var:
+            try:
+                if color_var:
+                    df_plot = df.groupby([x_var, color_var])[y_var].agg(agg_method.lower()).reset_index()
+                else:
+                    df_plot = df.groupby(x_var)[y_var].agg(agg_method.lower()).reset_index()
+                
+                st.info(f"Plotting {agg_method} of {y_var} by {x_var}")
+            except Exception as e:
+                st.error(f"Aggregation failed: {e}")
+                df_plot = df
+        else:
+             # For Histogram/Pie where Y might not be needed or is count
+             st.warning("Aggregation is mostly relevant when a Y variable is selected (e.g., Bar/Line charts).")
+             df_plot = df
+    else:
+        df_plot = df
+
     if chart_type == "Scatter Plot":
-        st.scatter_chart(df, x=x_var, y=y_var, color=color_var)
+        st.scatter_chart(df_plot, x=x_var, y=y_var, color=color_var)
     elif chart_type == "Line Chart":
-        st.line_chart(df, x=x_var, y=y_var, color=color_var)
+        st.line_chart(df_plot, x=x_var, y=y_var, color=color_var)
     elif chart_type == "Bar Chart":
-        st.bar_chart(df, x=x_var, y=y_var, color=color_var)
+        st.bar_chart(df_plot, x=x_var, y=y_var, color=color_var)
     elif chart_type == "Histogram":
         fig, ax = plt.subplots()
         if color_var:
-            for label, group in df.groupby(color_var):
+            for label, group in df_plot.groupby(color_var):
                 ax.hist(group[x_var], alpha=0.5, label=str(label), bins=20)
             ax.legend()
         else:
-            ax.hist(df[x_var], bins=20)
+            ax.hist(df_plot[x_var], bins=20)
         ax.set_title(f"Histogram of {x_var}")
         st.pyplot(fig)
     elif chart_type == "Box Plot":
-        # Using simple matplotlib for boxplot as streamlit doesn't have native simple boxplot yet
         fig, ax = plt.subplots()
         if color_var:
-            df.boxplot(column=y_var, by=x_var, ax=ax) # Group by X, plot Y
+            # Boxplot with grouping
+            data = []
+            labels = []
+            for label, group in df_plot.groupby(color_var):
+                data.append(group[x_var] if y_var is None else group[y_var])
+                labels.append(label)
+            ax.boxplot(data, labels=labels)
         else:
-            df.boxplot(column=y_var, by=x_var, ax=ax)
+            ax.boxplot(df_plot[x_var] if y_var is None else df_plot[y_var])
         st.pyplot(fig)
     elif chart_type == "Pie Chart":
         fig, ax = plt.subplots()
-        df[x_var].value_counts().plot.pie(autopct='%1.1f%%', ax=ax)
-        ax.set_ylabel('')
+        if color_var:
+             counts = df_plot[color_var].value_counts()
+             ax.pie(counts, labels=counts.index, autopct='%1.1f%%')
+        else:
+             counts = df_plot[x_var].value_counts()
+             ax.pie(counts, labels=counts.index, autopct='%1.1f%%')
         st.pyplot(fig)
 
 
@@ -289,36 +329,29 @@ with tab_causal:
     rd_cutoff = 0.0
     rd_bandwidth = 0.0
 
-    treatment = st.selectbox("Treatment (Action)", df.columns, index=get_index(df.columns, 'Feature_Adoption', 2)) 
+    treatment = st.selectbox("Treatment (Action)", df.columns, index=get_index(df.columns, 'Feature_Adoption', 2))
     
-    # --- Handle Categorical Treatment (e.g. A/B Test Groups) ---
-    if not pd.api.types.is_numeric_dtype(df[treatment]):
-        st.warning(f"Treatment column '{treatment}' is not numeric. Please map values to Control (0) and Treatment (1).")
+    # -----------------------------------------------------------
+    # Handle Categorical Treatment
+    # -----------------------------------------------------------
+    if df[treatment].dtype == 'object' or df[treatment].dtype.name == 'category':
+        st.info(f"Detected categorical treatment: {treatment}. Encoding as binary.")
         unique_vals = df[treatment].unique()
         
-        # Default to first two values if available
-        default_control = unique_vals[0] if len(unique_vals) > 0 else None
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            control_val = st.selectbox("Select Control Group Value (0)", unique_vals, index=0, key="control_val")
-        with col2:
-            remaining_vals = [v for v in unique_vals if v != control_val]
-            treat_val = st.selectbox("Select Treatment Group Value (1)", remaining_vals, index=0 if remaining_vals else None, key="treat_val")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            control_val = st.selectbox("Control Value (0)", unique_vals, index=0)
+        with col_t2:
+            treat_val = st.selectbox("Treatment Value (1)", unique_vals, index=1 if len(unique_vals) > 1 else 0)
             
-        if treat_val:
-            # Create mapped column
-            df['Treatment_Encoded'] = np.nan
-            df.loc[df[treatment] == control_val, 'Treatment_Encoded'] = 0
-            df.loc[df[treatment] == treat_val, 'Treatment_Encoded'] = 1
+        if control_val == treat_val:
+            st.error("Control and Treatment values must be different.")
+            st.stop()
             
-            # Filter to only these groups
-            df = df.dropna(subset=['Treatment_Encoded'])
-            
-            st.success(f"Mapped '{treatment}': {control_val} -> 0, {treat_val} -> 1. Filtered data to these groups.")
-            
-            # Update treatment variable to point to new column
-            treatment = 'Treatment_Encoded'
+        # Create a temporary encoded column for analysis
+        df['Treatment_Encoded'] = df[treatment].apply(lambda x: 1 if x == treat_val else 0)
+        # Update treatment variable to point to new column
+        treatment = 'Treatment_Encoded'
     # ----------------------------------------------------------- 
     outcome = st.selectbox("Outcome (Result)", df.columns, index=get_index(df.columns, 'Account_Value', 3))
     
@@ -523,16 +556,44 @@ if run_analysis:
                     st.markdown("DiD compares the changes in outcomes over time between a treatment group and a control group.")
                     st.latex(r"ATE = (E[Y|T=1, Post] - E[Y|T=1, Pre]) - (E[Y|T=0, Post] - E[Y|T=0, Pre])")
                 
-                    # For DiD, we often use a regression formulation: Y ~ T + Time + T*Time
-                    # DoWhy doesn't have a direct "backdoor.difference_in_differences" method that works easily with this setup without specific data format
-                    # So we will use a GLM (Linear Regression) which is equivalent to DiD with interaction term
-                
-                    estimate = model.estimate_effect(
-                        identified_estimand,
-                        method_name="backdoor.linear_regression",
-                        test_significance=True
-                    )
-                    st.info("Note: Using Linear Regression with interaction terms to approximate DiD.")
+                    # For DiD, we need the interaction term: Treatment * Time
+                    # Y = a + b1*T + b2*Time + b3*(T*Time) + e
+                    # The effect is b3.
+                    
+                    # Create interaction term
+                    df['DiD_Interaction'] = df[treatment] * df[time_period]
+                    
+                    # Prepare features for Linear Regression
+                    # We use sklearn or statsmodels. Let's use statsmodels for nice summary if available, 
+                    # but we have sklearn imported. Let's use sklearn for consistency with other parts or simple OLS.
+                    # Actually, we want standard errors. DoWhy's linear_regression gives SEs.
+                    # We can trick DoWhy by passing the interaction as a "confounder" or "modifier"? No.
+                    
+                    # Let's use statsmodels for the DiD specific regression to get the p-value and summary.
+                    import statsmodels.api as sm
+                    
+                    X_did = df[[treatment, time_period, 'DiD_Interaction']]
+                    if confounders:
+                        X_did = pd.concat([X_did, df[confounders]], axis=1)
+                    
+                    X_did = sm.add_constant(X_did)
+                    y_did = df[outcome]
+                    
+                    did_model = sm.OLS(y_did, X_did).fit()
+                    
+                    did_estimate = did_model.params['DiD_Interaction']
+                    
+                    # Create a dummy estimate object to match the flow
+                    estimate = type('obj', (object,), {
+                        'value': did_estimate,
+                        'params': did_model.params
+                    })
+                    
+                    st.write(did_model.summary())
+                    st.info(f"DiD Estimate (Interaction Term): {did_estimate:.4f}")
+                    
+                    # Skip the default DoWhy estimate for DiD as we did it manually
+                    estimate.value = did_estimate # Ensure downstream usage works if any
 
                 elif estimation_method == "A/B Test (Difference in Means)":
                     st.markdown("#### Method: A/B Test (Difference in Means)")
@@ -777,29 +838,37 @@ if run_analysis:
             )
 
             # --- Step 4: Refute ---
+            # --- Step 4: Refute ---
             st.subheader("4. Refutation")
-            st.markdown("**Methodology:** Random Common Cause Test")
-            st.markdown("We add a random variable $W_{random}$ as a common cause to the dataset.")
-            st.markdown("Since $W_{random}$ is independent of the true process, the new estimate should not change significantly.")
-            st.latex(r"Y_{new} = f(T, X, W_{random}) + \epsilon")
-            st.markdown("Expected Result: $ATE_{new} \\approx ATE_{original}$")
-
-            with st.spinner("Running Refutation Tests..."):
-                refute_results = model.refute_estimate(
-                    identified_estimand,
-                    estimate,
-                    method_name="random_common_cause"
-                )
             
-            st.write("**Test: Add Random Common Cause**")
-            st.write(f"Original Effect: {refute_results.estimated_effect:.2f}")
-            st.write(f"New Effect: {refute_results.new_effect:.2f}")
-            st.write(f"P-value: {refute_results.refutation_result['p_value']:.2f}")
-        
-            if refute_results.refutation_result['p_value'] > 0.05: # Simplistic check, usually we check if new effect is close to original
-                 st.success("✅ Robustness Check Passed: The estimate is stable.")
+            if estimation_method == "Difference-in-Differences (DiD)":
+                 st.warning("Refutation tests are not currently supported for the manual Difference-in-Differences implementation.")
             else:
-                 st.warning("⚠️ Robustness Check Warning: The estimate might be sensitive.")
+                st.markdown("**Methodology:** Random Common Cause Test")
+                st.markdown("We add a random variable $W_{random}$ as a common cause to the dataset.")
+                st.markdown("Since $W_{random}$ is independent of the true process, the new estimate should not change significantly.")
+                st.latex(r"Y_{new} = f(T, X, W_{random}) + \epsilon")
+                st.markdown("Expected Result: $ATE_{new} \\approx ATE_{original}$")
+
+                try:
+                    with st.spinner("Running Refutation Tests..."):
+                        refute_results = model.refute_estimate(
+                            identified_estimand,
+                            estimate,
+                            method_name="random_common_cause"
+                        )
+                    
+                    st.write("**Test: Add Random Common Cause**")
+                    st.write(f"Original Effect: {refute_results.estimated_effect:.2f}")
+                    st.write(f"New Effect: {refute_results.new_effect:.2f}")
+                    st.write(f"P-value: {refute_results.refutation_result['p_value']:.2f}")
+                
+                    if refute_results.refutation_result['p_value'] > 0.05: # Simplistic check, usually we check if new effect is close to original
+                         st.success("✅ Robustness Check Passed: The estimate is stable.")
+                    else:
+                         st.warning("⚠️ Robustness Check Warning: The estimate might be sensitive.")
+                except Exception as e:
+                    st.error(f"Refutation failed: {e}")
 
             # --- Step 5: Explore Results ---
             st.subheader("5. Explore Results")
