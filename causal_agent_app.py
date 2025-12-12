@@ -78,7 +78,7 @@ def simulate_data(n_samples=1000):
 # --- Streamlit UI ---
 st.set_page_config(page_title="Causal Inference Agent", layout="wide")
 st.title("🤖 Causal Inference Agent")
-st.markdown("**Builder:** [Sophia Chen](https://www.linkedin.com/in/sophia-chen-34794893/) | **Email:** sophiachen2012@gmail.com | **Medium:** [medium.com/@sophiachen2012](https://medium.com/@sophiachen2012)")
+st.markdown("**Builder:** Sophia Chen | **Email:** sophiachen2012@gmail.com | **Medium:** https://medium.com/@sophiachen2012 | **LinkedIn:** https://www.linkedin.com/in/sophia-chen-34794893/
 
 def get_app_metadata():
     """Parses metadata from requirements.txt"""
