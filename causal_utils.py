@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from econml.dml import LinearDML, CausalForestDML
 from econml.metalearners import SLearner, TLearner
 import matplotlib.pyplot as plt
+import statsmodels.api as sm
 
 # --- 1. Load Data ---
 """
@@ -41,6 +42,14 @@ def simulate_data(n_samples=1000):
         'Feature_Adoption': feature_adoption,
         'Account_Value': account_value
     })
+
+    # Enforce Data Types
+    df['Customer_Segment'] = df['Customer_Segment'].astype(int)
+    df['Historical_Usage'] = df['Historical_Usage'].astype(float)
+    df['Marketing_Nudge'] = df['Marketing_Nudge'].astype(int)
+    df['Quarter'] = df['Quarter'].astype(int)
+    df['Feature_Adoption'] = df['Feature_Adoption'].astype(int)
+    df['Account_Value'] = df['Account_Value'].astype(float)
     return df
 
 df = simulate_data()
@@ -197,7 +206,23 @@ model = CausalModel(
     elif estimation_method == "Instrumental Variables (IV)":
         script += "    estimate = model.estimate_effect(identified_estimand, method_name='iv.instrumental_variable')\n"
     elif estimation_method == "Difference-in-Differences (DiD)":
-        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.linear_regression', test_significance=test_significance)\n"
+        script += "    # ----------------------------------------------------------------\n"
+        script += "    # Manual DiD Estimation\n"
+        script += "    # We manually fit OLS with an interaction term (Treatment * Time)\n"
+        script += "    # because standard DoWhy estimators do not automatically handle\n"
+        script += "    # this specific DiD formulation.\n"
+        script += "    # ----------------------------------------------------------------\n"
+        script += "    data = model._data.copy()\n"
+        script += f"    data['DiD_Interaction'] = data['{treatment}'] * data['{time_period}']\n"
+        script += f"    X_did = data[['{treatment}', '{time_period}', 'DiD_Interaction']]\n"
+        script += f"    if {confounders}:\n"
+        script += f"        X_did = pd.concat([X_did, data[{confounders}]], axis=1)\n"
+        script += "    X_did = sm.add_constant(X_did)\n"
+        script += f"    y_did = data['{outcome}']\n"
+        script += "    did_model = sm.OLS(y_did, X_did).fit()\n"
+        script += "    print(did_model.summary())\n"
+        script += "    # Return dummy object with value\n"
+        script += "    estimate = type('obj', (object,), {'value': did_model.params['DiD_Interaction']})\n"
     elif estimation_method == "Regression Discontinuity":
         script += "    estimate = model.estimate_effect(identified_estimand, method_name='iv.instrumental_variable')\n"
     elif estimation_method == "A/B Test (Difference in Means)":
@@ -209,13 +234,18 @@ model = CausalModel(
     script += "print(f'Average Treatment Effect (ATE): {estimate.value}')\n"
     script += "\n"
     script += "# --- 6. Refutation ---\n"
-    script += "print('Running Refutation...')\n"
-    script += "refute_results = model.refute_estimate(\n"
-    script += "    identified_estimand,\n"
-    script += "    estimate,\n"
-    script += "    method_name='random_common_cause'\n"
-    script += ")\n"
-    script += "print(refute_results)\n"
+    if estimation_method == "Difference-in-Differences (DiD)":
+        script += "print('Skipping Refutation for Manual DiD')\n"
+        script += "# Refutation skipped\n"
+    else:
+        script += "print('Running Refutation...')\n"
+        script += "refute_results = model.refute_estimate(\n"
+        script += "    identified_estimand,\n"
+        script += "    estimate,\n"
+        script += "    method_name='random_common_cause'\n"
+        script += ")\n"
+        script += "print(refute_results)\n"
+
     script += "\n"
     script += "# --- 7. Bootstrapping ---\n"
     script += f"print(f'Running {n_iterations} bootstrap iterations...')\n"
