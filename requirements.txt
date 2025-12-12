@@ -5,3 +5,7 @@ pandas
 numpy
 scikit-learn
 matplotlib
+
+# --- Metadata ---
+# Release: 1.0.0 | 2025-12-12 | Initial release with Causal Inference features.
+# Release: 0.9.0 | 2025-12-10| Beta release for internal testing.
