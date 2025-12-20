@@ -1,4 +1,5 @@
 
+
 import numpy as np
 
 def generate_script(data_source, treatment, outcome, confounders, time_period, estimation_method, 
@@ -6,7 +7,7 @@ def generate_script(data_source, treatment, outcome, confounders, time_period, e
                     winsorize_enable, winsorize_cols, percentile,
                     log_transform_cols, standardize_cols, n_iterations,
 
-                    control_val=None, treat_val=None, hte_features=None):
+                    control_val=None, treat_val=None, hte_features=None, use_logit=False, bucketing_ops=None, filtering_ops=None):
     
     script = f"""import pandas as pd
 import numpy as np
@@ -34,13 +35,18 @@ def simulate_data(n_samples=1000):
     feature_adoption = np.random.binomial(1, prob_adoption, n_samples)
     account_value = (200 + 500 * feature_adoption + 1000 * customer_segment + 10 * historical_usage + 50 * quarter + np.random.normal(0, 50, n_samples))
     
+    # Outcome: Conversion (Binary)
+    prob_conversion = 1 / (1 + np.exp(-( -1 + 0.5 * customer_segment + 0.5 * feature_adoption)))
+    conversion = np.random.binomial(1, prob_conversion, n_samples)
+
     df = pd.DataFrame({
         'Customer_Segment': customer_segment,
         'Historical_Usage': historical_usage,
         'Marketing_Nudge': marketing_nudge,
         'Quarter': quarter,
         'Feature_Adoption': feature_adoption,
-        'Account_Value': account_value
+        'Account_Value': account_value,
+        'Conversion': conversion
     })
 
     # Enforce Data Types
@@ -50,6 +56,7 @@ def simulate_data(n_samples=1000):
     df['Quarter'] = df['Quarter'].astype(int)
     df['Feature_Adoption'] = df['Feature_Adoption'].astype(int)
     df['Account_Value'] = df['Account_Value'].astype(float)
+    df['Conversion'] = df['Conversion'].astype(int)
     return df
 
 df = simulate_data()
@@ -60,6 +67,39 @@ print("Data Simulated Successfully")
 # REPLACE 'your_dataset.csv' WITH THE PATH TO YOUR UPLOADED FILE
 df = pd.read_csv('your_dataset.csv')
 print("Data Loaded Successfully")
+
+"""
+
+    script += """
+# --- Auto-Convert Boolean to Dummy ---
+def convert_bool_to_int(df):
+    # 1. Actual boolean types
+    bool_cols = df.select_dtypes(include=['bool']).columns
+    if len(bool_cols) > 0:
+        df[bool_cols] = df[bool_cols].astype(int)
+        print(f"Converted boolean columns to integer: {', '.join(bool_cols)}")
+    
+    # 2. String "TRUE"/"FALSE" (case insensitive)
+    obj_cols = df.select_dtypes(include=['object']).columns
+    mapping = {'TRUE': 1, 'FALSE': 0, 'T': 1, 'F': 0, '1': 1, '0': 0, '1.0': 1, '0.0': 0}
+    
+    for col in obj_cols:
+        try:
+            series_upper = df[col].astype(str).str.upper()
+            sample = series_upper.dropna().head(100)
+            if not set(sample.unique()).issubset(mapping.keys()):
+                continue
+            
+            unique_vals = set(series_upper.dropna().unique())
+            if unique_vals.issubset(mapping.keys()):
+                df[col] = series_upper.map(mapping).fillna(df[col])
+                df[col] = pd.to_numeric(df[col], errors='ignore')
+                print(f"Converted string boolean column to integer: {col}")
+        except:
+            pass
+    return df
+
+df = convert_bool_to_int(df)
 """
 
     script += "\n# --- 2. Data Preprocessing ---\n"
@@ -119,10 +159,54 @@ print("Log transformation applied.")
         script += f"""
 # Standardization
 scaler = StandardScaler()
-std_cols = {standardize_cols}
-df[std_cols] = scaler.fit_transform(df[std_cols])
-print("Standardization applied.")
+df[{standardize_cols}] = scaler.fit_transform(df[{standardize_cols}])
+print("Standardization applied to: {', '.join(standardize_cols)}")
 """
+
+    if filtering_ops:
+        script += "\n# Data Filtering\n"
+        for op in filtering_ops:
+            col = op['col']
+            operator = op['op']
+            val = op['val']
+            
+            # Handle string vs numeric value in code generation
+            if isinstance(val, str):
+                val_repr = f"'{val}'"
+            else:
+                val_repr = str(val)
+
+            if operator == "==":
+                script += f"df = df[df['{col}'] == {val_repr}]\n"
+            elif operator == "!=":
+                script += f"df = df[df['{col}'] != {val_repr}]\n"
+            elif operator == ">":
+                script += f"df = df[df['{col}'] > {val_repr}]\n"
+            elif operator == "<":
+                script += f"df = df[df['{col}'] < {val_repr}]\n"
+            elif operator == ">=":
+                script += f"df = df[df['{col}'] >= {val_repr}]\n"
+            elif operator == "<=":
+                script += f"df = df[df['{col}'] <= {val_repr}]\n"
+            elif operator == "contains":
+                script += f"df = df[df['{col}'].astype(str).str.contains({val_repr}, na=False)]\n"
+            
+            script += f"print(f\"Applied filter: {col} {operator} {val_repr}. Rows remaining: {{len(df)}}\")\n"
+
+    if bucketing_ops:
+        script += "\n# Variable Bucketing\n"
+        for op in bucketing_ops:
+            col = op['col']
+            n_bins = op['n_bins']
+            method = op['method']
+            new_col = op['new_col']
+            
+            if method == 'cut':
+                script += f"df['{new_col}'] = pd.cut(df['{col}'], bins={n_bins}, labels=False)\n"
+            else:
+                script += f"df['{new_col}'] = pd.qcut(df['{col}'], q={n_bins}, labels=False, duplicates='drop')\n"
+            
+            script += f"print(f\"Created bucketed column '{new_col}' from '{col}'\")\n"
 
     script += f"""
 # --- 3. Causal Model ---
@@ -143,6 +227,13 @@ outcome = '{outcome}'
 confounders = {confounders}
 instrument = None
 effect_modifiers = confounders # Using confounders as effect modifiers for heterogeneity
+use_logit = {use_logit}
+
+# Check for Binary Outcome
+is_binary_outcome = False
+if df[outcome].nunique() == 2:
+    is_binary_outcome = True
+    print(f"Detected binary outcome: {{outcome}}. Using Classification models.")
 """
 
 
@@ -172,25 +263,58 @@ model = CausalModel(
 
     # Logic for estimation methods (simplified mapping from app)
     if estimation_method == "Double Machine Learning (LinearDML)":
-        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.econml.dml.LinearDML')\n"
+        script += "    # Always use Regressor for model_y (LPM) to avoid errors with binary outcomes in LinearDML\n"
+        script += "    # because LinearDML expects a continuous residual or probability estimate,\n"
+        script += "    # and passing a Classifier can cause errors if EconML expects a Regressor interface.\n"
+        script += "    model_y = RandomForestRegressor(n_jobs=-1, random_state=42)\n"
+        script += "\n"
+        script += "    estimate = model.estimate_effect(\n"
+        script += "        identified_estimand,\n"
+        script += "        method_name=\"backdoor.econml.dml.LinearDML\",\n"
+        script += "        method_params={\n"
+        script += "            \"init_params\": {\n"
+        script += "                \"model_y\": model_y,\n"
+        script += "                \"model_t\": RandomForestClassifier(n_jobs=-1, random_state=42),\n"
+        script += "                \"discrete_treatment\": True,\n"
+        script += "                \"linear_first_stages\": False,\n"
+        script += "                \"cv\": 3,\n"
+        script += "                \"random_state\": 42\n"
+        script += "            },\n"
+        script += "            \"fit_params\": {}\n"
+        script += "        }\n"
+        script += "    )\n"
     elif estimation_method == "Propensity Score Matching":
+        script += "    if is_binary_outcome:\n"
+        script += "        print('Binary Outcome: Estimate represents Risk Difference (Difference in Proportions).')\n"
         script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.propensity_score_matching')\n"
     elif estimation_method == "Inverse Propensity Weighting (IPTW)":
+        script += "    if is_binary_outcome:\n"
+        script += "        print('Binary Outcome: Estimate represents Risk Difference (Weighted Difference in Proportions).')\n"
         script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.propensity_score_weighting')\n"
     elif "Meta-Learner" in estimation_method:
         learner = "SLearner" if "S-Learner" in estimation_method else "TLearner"
         method_name = f"backdoor.econml.metalearners.{learner}"
         
         if learner == "SLearner":
-            init_params_str = '{"overall_model": RandomForestRegressor(random_state=42)}'
-        else:
-            init_params_str = '{"models": RandomForestRegressor(random_state=42)}'
+            script += "    if is_binary_outcome:\n"
+            script += "        overall_model = RandomForestClassifier(n_jobs=-1, random_state=42)\n"
+            script += "    else:\n"
+            script += "        overall_model = RandomForestRegressor(n_jobs=-1, random_state=42)\n"
+            script += "    init_params = {\"overall_model\": overall_model}\n"
+        else: # T-Learner
+            script += "    print(\"T-Learner (Two Learners) fits separate models for treated and control groups.\")\n"
+            script += "    method_name = \"backdoor.econml.metalearners.TLearner\"\n"
+            script += "    if is_binary_outcome:\n"
+            script += "        models = RandomForestClassifier(n_jobs=-1, random_state=42)\n"
+            script += "    else:\n"
+            script += "        models = RandomForestRegressor(n_jobs=-1, random_state=42)\n"
+            script += "    init_params = {\"models\": models}\n"
         
-        script += "    method_name = '" + method_name + "'\n"
-        script += "    init_params = " + init_params_str + "\n"
         script += "    estimate = model.estimate_effect(identified_estimand, method_name=method_name, method_params=dict(init_params=init_params, fit_params=dict()))\n"
     elif estimation_method == "Causal Forest (DML)":
-        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.econml.dml.CausalForestDML', method_params=dict(init_params=dict(model_y=RandomForestRegressor(random_state=42), model_t=RandomForestClassifier(random_state=42), discrete_treatment=True, random_state=42), fit_params=dict()))\n"
+        # Always use Regressor for model_y (LPM)
+        script += "    model_y = RandomForestRegressor(n_jobs=-1, random_state=42)\n"
+        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.econml.dml.CausalForestDML', method_params=dict(init_params=dict(model_y=model_y, model_t=RandomForestClassifier(n_jobs=-1, random_state=42), discrete_treatment=True, random_state=42), fit_params=dict()))\n"
 
     elif estimation_method == "Difference-in-Differences (DiD)":
         script += "    # ----------------------------------------------------------------\n"
@@ -199,6 +323,11 @@ model = CausalModel(
         script += "    # because standard DoWhy estimators do not automatically handle\n"
         script += "    # this specific DiD formulation.\n"
         script += "    # ----------------------------------------------------------------\n"
+        script += "    if is_binary_outcome:\n"
+        script += "        if use_logit:\n"
+        script += "            print('Binary Outcome: Using Logit Model (Logistic Regression). Estimate represents Odds Ratio.')\n"
+        script += "        else:\n"
+        script += "            print('Binary Outcome: Using Linear Probability Model (LPM) approach. Estimate represents Risk Difference.')\n"
         script += "    data = model._data.copy()\n"
         script += f"    data['DiD_Interaction'] = data['{treatment}'] * data['{time_period}']\n"
         script += f"    X_did = data[['{treatment}', '{time_period}', 'DiD_Interaction']]\n"
@@ -206,13 +335,66 @@ model = CausalModel(
         script += f"        X_did = pd.concat([X_did, data[{confounders}]], axis=1)\n"
         script += "    X_did = sm.add_constant(X_did)\n"
         script += f"    y_did = data['{outcome}']\n"
-        script += "    did_model = sm.OLS(y_did, X_did).fit()\n"
-        script += "    print(did_model.summary())\n"
-        script += "    # Return dummy object with value\n"
-        script += "    estimate = type('obj', (object,), {'value': did_model.params['DiD_Interaction']})\n"
+        
+        script += "    if use_logit and is_binary_outcome:\n"
+        script += "        did_model = sm.Logit(y_did, X_did).fit(disp=0)\n"
+        script += "        did_coeff = did_model.params['DiD_Interaction']\n"
+        script += "        odds_ratio = np.exp(did_coeff)\n"
+        script += "        print(did_model.summary())\n"
+        script += "        print(f'Estimated Odds Ratio (Interaction): {odds_ratio:.4f}')\n"
+        script += "        # Convert OR to Risk Difference\n"
+        script += f"        baseline_risk = data[data['{treatment}'] == 0]['{outcome}'].mean()\n"
+        script += "        if 0 < baseline_risk < 1:\n"
+        script += "            def or_to_rd(or_val, p0):\n"
+        script += "                return (or_val * p0 / (1 - p0 + (or_val * p0))) - p0\n"
+        script += "            implied_risk_diff = or_to_rd(odds_ratio, baseline_risk)\n"
+        script += "            # CI Conversion\n"
+        script += "            did_conf_int = did_model.conf_int().loc['DiD_Interaction']\n"
+        script += "            or_lower = np.exp(did_conf_int[0])\n"
+        script += "            or_upper = np.exp(did_conf_int[1])\n"
+        script += "            rd_lower = or_to_rd(or_lower, baseline_risk)\n"
+        script += "            rd_upper = or_to_rd(or_upper, baseline_risk)\n"
+        script += "            print(f'Implied Risk Difference (at Baseline Risk {baseline_risk:.2%}): {implied_risk_diff:+.2%}')\n"
+        script += "            print(f'Implied RD 95% CI: [{rd_lower:+.2%}, {rd_upper:+.2%}]')\n"
+        script += "        estimate = type('obj', (object,), {'value': did_coeff})\n"
+        script += "    else:\n"
+        script += "        did_model = sm.OLS(y_did, X_did).fit()\n"
+        script += "        print(did_model.summary())\n"
+        script += "        estimate = type('obj', (object,), {'value': did_model.params['DiD_Interaction']})\n"
 
-    elif estimation_method == "A/B Test (Difference in Means)":
-        script += "    estimate = model.estimate_effect(identified_estimand, method_name='backdoor.linear_regression', test_significance=test_significance)\n"
+    elif estimation_method == "OLS/Logit":
+        script += "    if is_binary_outcome:\n"
+        script += "        if use_logit:\n"
+        script += "            print('Binary Outcome: Using Logit Model (Logistic Regression). Estimate represents Odds Ratio.')\n"
+        script += "        else:\n"
+        script += "            print('Binary Outcome: Using Linear Probability Model (LPM) approach. Estimate represents Risk Difference.')\n"
+        
+        script += "    if use_logit and is_binary_outcome:\n"
+        script += f"        X_ab = df[['{treatment}'] + confounders]\n"
+        script += "        X_ab = sm.add_constant(X_ab)\n"
+        script += f"        y_ab = df['{outcome}']\n"
+        script += "        ab_model = sm.Logit(y_ab, X_ab).fit(disp=0)\n"
+        script += f"        ab_coeff = ab_model.params['{treatment}']\n"
+        script += "        odds_ratio = np.exp(ab_coeff)\n"
+        script += "        print(ab_model.summary())\n"
+        script += "        print(f'Estimated Odds Ratio: {odds_ratio:.4f}')\n"
+        script += "        # Convert OR to Risk Difference\n"
+        script += f"        baseline_risk = df[df['{treatment}'] == 0]['{outcome}'].mean()\n"
+        script += "        if 0 < baseline_risk < 1:\n"
+        script += "            def or_to_rd(or_val, p0):\n"
+        script += "                return (or_val * p0 / (1 - p0 + (or_val * p0))) - p0\n"
+        script += "            implied_risk_diff = or_to_rd(odds_ratio, baseline_risk)\n"
+        script += "            # CI Conversion\n"
+        script += "            ab_conf_int = ab_model.conf_int().loc['{treatment}']\n"
+        script += "            or_lower = np.exp(ab_conf_int[0])\n"
+        script += "            or_upper = np.exp(ab_conf_int[1])\n"
+        script += "            rd_lower = or_to_rd(or_lower, baseline_risk)\n"
+        script += "            rd_upper = or_to_rd(or_upper, baseline_risk)\n"
+        script += "            print(f'Implied Risk Difference (at Baseline Risk {baseline_risk:.2%}): {implied_risk_diff:+.2%}')\n"
+        script += "            print(f'Implied RD 95% CI: [{rd_lower:+.2%}, {rd_upper:+.2%}]')\n"
+        script += "        estimate = type('obj', (object,), {'value': ab_coeff})\n"
+        script += "    else:\n"
+        script += "        estimate = model.estimate_effect(identified_estimand, method_name='backdoor.linear_regression', test_significance=test_significance)\n"
     
     script += "    return estimate\n"
 
@@ -220,9 +402,16 @@ model = CausalModel(
     script += "print(f'Average Treatment Effect (ATE): {estimate.value}')\n"
     script += "\n"
     script += "# --- 6. Refutation ---\n"
+    # Skip Refutation for DiD and Logit models as they are manually implemented
     if estimation_method == "Difference-in-Differences (DiD)":
-        script += "print('Skipping Refutation for Manual DiD')\n"
-        script += "# Refutation skipped\n"
+        script += "print('Refutation tests are not currently supported for Difference-in-Differences (Manual Implementation).')\n"
+    elif estimation_method == "OLS/Logit":
+        if use_logit:
+            script += "print('Refutation tests are not currently supported for Logit Model (Manual Implementation).')\n"
+        else:
+            script += "print('Running Refutation...')\n"
+            script += "refute_results = model.refute_estimate(identified_estimand, estimate, method_name='random_common_cause')\n"
+            script += "print(refute_results)\n"
     else:
         script += "print('Running Refutation...')\n"
         script += "refute_results = model.refute_estimate(\n"
@@ -233,26 +422,27 @@ model = CausalModel(
         script += "print(refute_results)\n"
 
     script += "\n"
-    script += "# --- 7. Bootstrapping ---\n"
-    script += f"print(f'Running {n_iterations} bootstrap iterations...')\n"
-    script += "bootstrap_estimates = []\n"
-    script += f"for i in range({n_iterations}):\n"
-    script += "    try:\n"
-    script += "        df_resampled = df.sample(frac=1, replace=True, random_state=i)\n"
-    script += "        model_boot = CausalModel(\n"
-    script += "            data=df_resampled,\n"
-    script += f"            treatment='{treatment}',\n"
-    script += f"            outcome='{outcome}',\n"
-    script += f"            common_causes={confounders},\n"
-    script += "            instruments=instrument,\n"
-    script += f"            effect_modifiers={confounders}\n"
-    script += "        )\n"
+    script += "# --- 7. Bootstrapping (if enabled) ---\n"
+    script += "if n_iterations > 0:\n"
+    script += f"    print(f'\\nRunning {n_iterations} bootstrap iterations...')\n"
+    script += "    bootstrap_estimates = []\n"
+    script += f"    for i in range({n_iterations}):\n"
+    script += "        try:\n"
+    script += "            df_resampled = df.sample(frac=1, replace=True, random_state=i)\n"
+    script += "            model_boot = CausalModel(\n"
+    script += "                data=df_resampled,\n"
+    script += f"                treatment='{treatment}',\n"
+    script += f"                outcome='{outcome}',\n"
+    script += f"                common_causes={confounders},\n"
+    script += "                instruments=instrument,\n"
+    script += f"                effect_modifiers={confounders}\n"
+    script += "            )\n"
     
-    script += "        identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)\n"
-    script += "        est_boot = estimate_causal_effect(model_boot, identified_estimand_boot, test_significance=False)\n"
-    script += "        bootstrap_estimates.append(est_boot.value)\n"
-    script += "    except Exception:\n"
-    script += "        pass\n"
+    script += "            identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)\n"
+    script += "            est_boot = estimate_causal_effect(model_boot, identified_estimand_boot, test_significance=False)\n"
+    script += "            bootstrap_estimates.append(est_boot.value)\n"
+    script += "        except Exception:\n"
+    script += "            pass\n"
     script += "\n"
     script += "    if bootstrap_estimates:\n"
     script += "        se = np.std(bootstrap_estimates)\n"
@@ -273,7 +463,7 @@ model = CausalModel(
         script += "for feature in features_to_analyze:\n"
         script += "    try:\n"
         
-        if estimation_method == "A/B Test (Difference in Means)":
+        if estimation_method == "OLS/Logit":
             script += "        # Model: Y ~ T + X + T*X + Confounders\n"
             script += "        df['HTE_Interaction'] = df[treatment] * df[feature]\n"
             script += "        X_hte = df[[treatment, feature, 'HTE_Interaction']]\n"
