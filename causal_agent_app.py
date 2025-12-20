@@ -55,6 +55,11 @@ def simulate_data(n_samples=1000):
         + 50 * quarter # Time trend
         + np.random.normal(0, 50, n_samples)
     )
+
+    # Outcome: Conversion (Binary)
+    # Base prob depends on segment. Treatment increases prob by ~10%
+    prob_conversion = 1 / (1 + np.exp(-( -1 + 0.5 * customer_segment + 0.5 * feature_adoption)))
+    conversion = np.random.binomial(1, prob_conversion, n_samples)
     
     df = pd.DataFrame({
         'Customer_Segment': customer_segment,
@@ -62,7 +67,8 @@ def simulate_data(n_samples=1000):
         'Marketing_Nudge': marketing_nudge,
         'Quarter': quarter,
         'Feature_Adoption': feature_adoption,
-        'Account_Value': account_value
+        'Account_Value': account_value,
+        'Conversion': conversion
     })
     
     # Enforce Data Types
@@ -72,7 +78,57 @@ def simulate_data(n_samples=1000):
     df['Quarter'] = df['Quarter'].astype(int)
     df['Feature_Adoption'] = df['Feature_Adoption'].astype(int)
     df['Account_Value'] = df['Account_Value'].astype(float)
+    df['Conversion'] = df['Conversion'].astype(int)
     
+    return df
+
+def convert_bool_to_int(df):
+    # 1. Actual boolean types
+    bool_cols = df.select_dtypes(include=['bool']).columns
+    if len(bool_cols) > 0:
+        df[bool_cols] = df[bool_cols].astype(int)
+    
+    # 2. String "TRUE"/"FALSE" (case insensitive)
+    # Check object columns
+    obj_cols = df.select_dtypes(include=['object']).columns
+    
+    # Mapping dictionary
+    mapping = {
+        'TRUE': 1, 'FALSE': 0,
+        'T': 1, 'F': 0,
+        '1': 1, '0': 0,
+        '1.0': 1, '0.0': 0
+    }
+    
+    for col in obj_cols:
+        # Optimization: Check first value or sample to decide if we should attempt conversion
+        # to avoid expensive unique() on large columns.
+        # Or just try to map and check if we introduced NaNs where there weren't any.
+        
+        # Fast check: are there any values that look like booleans?
+        # Let's stick to the safe unique check but optimize it slightly?
+        # Actually, for huge data, unique() is slow.
+        # Let's try to convert and see if it works.
+        
+        try:
+            # Attempt to map everything to upper case
+            series_upper = df[col].astype(str).str.upper()
+            
+            # Check if all unique values are in our mapping keys (plus NaNs)
+            # We can check a sample first for speed
+            sample = series_upper.dropna().head(100)
+            if not set(sample.unique()).issubset(mapping.keys()):
+                continue # Skip if sample has non-boolean values
+                
+            # If sample passed, check full unique (still safer than blind conversion)
+            # Or trust the sample? Let's check full unique but only if sample passed.
+            unique_vals = set(series_upper.dropna().unique())
+            if unique_vals.issubset(mapping.keys()):
+                df[col] = series_upper.map(mapping).fillna(df[col])
+                df[col] = pd.to_numeric(df[col], errors='ignore')
+        except:
+            pass
+            
     return df
 
 # --- Streamlit UI ---
@@ -120,15 +176,64 @@ with tab_eda:
     st.subheader("1. Data Source")
     data_source = st.radio("Data Source", ["Simulated Data", "Upload CSV"], horizontal=True)
     
+    # Initialize Session State
+    if 'df' not in st.session_state:
+        st.session_state.df = simulate_data()
+    
+    if 'bucketing_ops' not in st.session_state:
+        st.session_state.bucketing_ops = []
+    
+    if 'filtering_ops' not in st.session_state:
+        st.session_state.filtering_ops = []
+    
+
+
     if data_source == "Upload CSV":
         uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
         if uploaded_file is not None:
-            df = pd.read_csv(uploaded_file)
+            # Check if it's a new file
+            file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+            if 'uploaded_file_id' not in st.session_state or st.session_state.uploaded_file_id != file_id:
+                # New file loaded
+                # New file loaded
+                df = pd.read_csv(uploaded_file)
+                df = convert_bool_to_int(df) # Auto-convert booleans
+                st.session_state.raw_df = df.copy() # Store raw data
+                st.session_state.df = df.copy() # Initialize working df
+                st.session_state.uploaded_file_id = file_id
+                # Reset ops
+                st.session_state.bucketing_ops = []
+                st.session_state.filtering_ops = []
+                st.session_state.filtering_ops = []
+                st.rerun()
+            else:
+                # Same file, keep existing session state df (which might have edits)
+                df = st.session_state.df
         else:
             st.info("Awaiting CSV upload. Using simulated data for preview.")
-            df = simulate_data()
+            # Fallback to simulated if no file, but don't overwrite if we had one before?
+            # Actually, if no file is uploaded, we should probably show simulated or empty.
+            if 'df' not in st.session_state:
+                 st.session_state.df = simulate_data()
+            df = st.session_state.df
     else:
-        df = simulate_data()
+        # Simulated Data
+        # If switching to simulated, we might want to reset if we were previously on Upload
+        # For now, simplistic approach: if we don't have a df, simulate it.
+        if 'df' not in st.session_state:
+             st.session_state.df = simulate_data()
+             st.session_state.raw_df = st.session_state.df.copy()
+        
+        # If the user explicitly wants to reset simulated data, we can add a button
+        if st.button("Reset Simulated Data"):
+            st.session_state.df = simulate_data()
+            st.session_state.raw_df = st.session_state.df.copy()
+            st.session_state.bucketing_ops = []
+            st.session_state.filtering_ops = []
+            st.session_state.filtering_ops = []
+            st.rerun()
+            
+        df = st.session_state.df
 
     # --- Data Preprocessing ---
     st.subheader("2. Data Preprocessing")
@@ -224,6 +329,102 @@ with tab_eda:
             scaler = StandardScaler()
             df[standardize_cols] = scaler.fit_transform(df[standardize_cols])
             st.info(f"Standardization applied to: {', '.join(standardize_cols)}")
+
+        # 5. Variable Bucketing (Binning)
+        st.markdown("#### Variable Bucketing (Binning)")
+        with st.expander("Create Bucketed Variables", expanded=False):
+            bucket_col = st.selectbox("Select Column to Bucket", numeric_cols, key="bucket_col")
+            n_bins = st.number_input("Number of Bins", min_value=2, max_value=20, value=4, step=1, key="n_bins")
+            bin_method = st.radio("Binning Method", ["Equal Width (cut)", "Equal Frequency (qcut)"], key="bin_method")
+            new_col_name = st.text_input("New Column Name", value=f"{bucket_col}_binned" if bucket_col else "binned_col", key="new_col_name")
+            
+            if st.button("Create Buckets"):
+                if bucket_col and new_col_name:
+                    try:
+                        if bin_method == "Equal Width (cut)":
+                            st.session_state.df[new_col_name] = pd.cut(st.session_state.df[bucket_col], bins=n_bins, labels=False)
+                            method_code = "cut"
+                        else:
+                            st.session_state.df[new_col_name] = pd.qcut(st.session_state.df[bucket_col], q=n_bins, labels=False, duplicates='drop')
+                            method_code = "qcut"
+                        
+                        # Store operation for export script
+                        op = {
+                            "col": bucket_col,
+                            "n_bins": n_bins,
+                            "method": method_code,
+                            "new_col": new_col_name
+                        }
+                        st.session_state.bucketing_ops.append(op)
+                        
+                        st.success(f"Created '{new_col_name}' with {n_bins} bins.")
+                        st.write(st.session_state.df[new_col_name].value_counts().sort_index())
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Bucketing failed: {e}")
+                else:
+                    st.error("Please select a column and provide a name.")
+
+        # 6. Data Filtering
+        st.markdown("#### Data Filtering")
+        with st.expander("Filter Data", expanded=False):
+            filter_col = st.selectbox("Select Column to Filter", df.columns, key="filter_col")
+            filter_op = st.selectbox("Condition", ["==", "!=", ">", "<", ">=", "<=", "contains"], key="filter_op")
+            
+            # Dynamic input based on column type
+            if pd.api.types.is_numeric_dtype(df[filter_col]):
+                filter_val = st.number_input("Value", value=0.0, key="filter_val_num")
+            else:
+                filter_val = st.text_input("Value", key="filter_val_text")
+                
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                if st.button("Apply Filter"):
+                    try:
+                        initial_len = len(st.session_state.df)
+                        
+                        if filter_op == "==":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col] == filter_val]
+                        elif filter_op == "!=":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col] != filter_val]
+                        elif filter_op == ">":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col] > filter_val]
+                        elif filter_op == "<":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col] < filter_val]
+                        elif filter_op == ">=":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col] >= filter_val]
+                        elif filter_op == "<=":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col] <= filter_val]
+                        elif filter_op == "contains":
+                            st.session_state.df = st.session_state.df[st.session_state.df[filter_col].astype(str).str.contains(str(filter_val), na=False)]
+                        
+                        final_len = len(st.session_state.df)
+                        
+                        # Store operation
+                        op = {
+                            "col": filter_col,
+                            "op": filter_op,
+                            "val": filter_val
+                        }
+                        st.session_state.filtering_ops.append(op)
+                        
+                        st.success(f"Filter applied. Rows reduced from {initial_len} to {final_len}.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Filtering failed: {e}")
+            
+            with col_f2:
+                if st.button("Reset Data"):
+                    # Reload from raw_df
+                    if 'raw_df' in st.session_state:
+                         st.session_state.df = st.session_state.raw_df.copy()
+                    else:
+                         st.session_state.df = simulate_data()
+                         st.session_state.raw_df = st.session_state.df.copy()
+                    
+                    st.session_state.bucketing_ops = []
+                    st.session_state.filtering_ops = []
+                    st.rerun()
 
     # --- Data Preview ---
     st.subheader("3. Data Preview")
@@ -340,7 +541,7 @@ with tab_causal:
     estimation_method = st.selectbox(
         "Estimation Method",
         [
-            "A/B Test (Difference in Means)",
+            "OLS/Logit",
             "Double Machine Learning (LinearDML)", 
             "Propensity Score Matching",
             "Inverse Propensity Weighting (IPTW)",
@@ -377,6 +578,12 @@ with tab_causal:
     # ----------------------------------------------------------- 
     outcome = st.selectbox("Outcome (Result)", df.columns, index=get_index(df.columns, 'Account_Value', 3))
     
+    # Check for Binary Outcome
+    is_binary_outcome = False
+    if df[outcome].nunique() == 2:
+        is_binary_outcome = True
+        st.info(f"Detected binary outcome: `{outcome}`. Using Classification models for estimation.")
+
     default_confounders = [c for c in ['Customer_Segment', 'Historical_Usage'] if c in df.columns]
     confounders = st.multiselect("Confounders (Common Causes)", df.columns, default=default_confounders)
     
@@ -384,7 +591,11 @@ with tab_causal:
     time_period = st.selectbox("Time Period (for DiD)", [None] + list(df.columns), index=0)
     
     st.markdown("#### Bootstrapping Settings")
-    n_iterations = st.number_input("Bootstrap Iterations", min_value=10, max_value=500, value=50, step=10, help="Number of resampling iterations for SE estimation.")
+    enable_bootstrap = st.checkbox("Enable Bootstrapping (Calculate Standard Errors)", value=True)
+    if enable_bootstrap:
+        n_iterations = st.number_input("Bootstrap Iterations", min_value=10, max_value=500, value=50, step=10, help="Number of resampling iterations for SE estimation.")
+    else:
+        n_iterations = 0
 
     run_analysis = st.button("Run Causal Analysis", type="primary")
 
@@ -406,20 +617,29 @@ with tab_guide:
     - **Treatment Column**: The variable indicating the intervention (e.g., `Feature_Adoption`, `Marketing_Campaign`).
     - **Outcome Column**: The metric you want to influence (e.g., `Account_Value`, `Conversion_Rate`).
     - **Confounders**: Variables that influence both treatment and outcome (e.g., `Customer_Segment`, `Region`).
+    - **Data Preprocessing**:
+        - **Auto-Convert Booleans**: Automatically converts TRUE/FALSE columns to 1/0.
+        - **Missing Value Imputation**: Fill missing data using mean, median, or custom values.
+        - **Winsorization**: Cap extreme outliers to reduce noise.
+        - **Log Transformation**: Apply log transform to skewed variables.
+        - **Standardization**: Scale variables to mean 0 and variance 1.
+        - **Variable Bucketing**: Create categorical bins from numerical variables (e.g., Age Groups).
+        - **Data Filtering**: Filter your dataset based on specific conditions (e.g., Region == 'North').
+    - **Exploratory Analysis**:
+        - **Data Preview**: View your raw and processed data.
+        - **Chart Builder**: Create custom visualizations with **Aggregation** (Mean, Sum, Count, Median, Min, Max).
+    - **Causal Analysis**:
+        - **Binary Outcome Support**: Automatically detects binary outcomes (e.g., Conversion).
+            - **OLS/Logit & DiD**: Automatically uses **Logit Model** (Odds Ratio).
+            - **Other Methods**: Automatically adapts to use Classifiers.
+        - **Heterogeneous Treatment Effects (HTE)**: Analyze how the treatment effect varies by user characteristics (e.g., "Does the feature work better for mobile users?").
+        - **Refutation Tests**: Validate your results (Placebo Treatment, Random Common Cause). *Note: Not available for Manual DiD or Logit models.*
+        - **Optional Bootstrapping**: Enable/Disable bootstrapping for faster performance when Standard Errors are not needed.
     
-    **Preprocessing**:
-    - **Imputation**: Fill missing values using Mean, Median, Mode, or Custom values.
-    - **Winsorization**: Cap extreme outliers to reduce noise.
-    - **Log Transformation**: Apply log transformation to skewed variables (e.g., Revenue) to normalize their distribution.
-    - **Standardization**: Scale variables to have mean 0 and variance 1, useful for distance-based methods like Matching.
-    
-    ### 2. Exploratory Analysis
-    Use the **Chart Builder** in the first tab to visualize your data.
-    - **Aggregation**: Check "Aggregate Data" to see summary statistics (e.g., Average Revenue by Region).
-    - **Distributions**: Use Histograms or Box Plots to understand the spread of your variables.
-    
-    ### 3. Causal Analysis
-    Go to the "Causal Analysis" tab to estimate effects.
+    ### Key Metrics
+    - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
+    - **Odds Ratio (OR)**: For binary outcomes using Logit, represents the relative odds of success.
+    - **Implied Risk Difference**: For Logit models, the absolute change in probability at a specific baseline risk.
     
     #### Step 1: Define Causal Graph
     Select your Treatment, Outcome, and Confounders. This tells the app what relationship to measure and what to control for.
@@ -427,7 +647,7 @@ with tab_guide:
     #### Step 2: Choose Estimation Method
     | Method | When to use? |
     | :--- | :--- |
-    | **A/B Test (Diff-in-Means)** | When you have a randomized controlled trial (RCT). |
+    | **OLS/Logit** | When you have a randomized controlled trial (RCT) or want simple regression adjustment. |
     | **Diff-in-Differences (DiD)** | When you have data over time (Pre/Post) and a Control group. Requires a `Time Period` column. |
     | **Propensity Score Matching** | To create a synthetic control group by matching similar users. |
     | **Inverse Propensity Weighting (IPTW)** | Weight observations by inverse probability of treatment to create a pseudo-population. |
@@ -516,6 +736,7 @@ if run_analysis:
             st.subheader(f"3. Estimation ({estimation_method})")
             with st.spinner(f"Estimating Causal Effect using {estimation_method}..."):
             
+                use_logit = False # Initialize to avoid NameError in Refutation
                 if estimation_method == "Double Machine Learning (LinearDML)":
                     st.markdown("#### Method: Double Machine Learning (DML)")
                     st.markdown("DML removes the effect of confounders ($X$) from both treatment ($T$) and outcome ($Y$) using ML models.")
@@ -532,23 +753,19 @@ if run_analysis:
 
                     # We use LinearDML from EconML
                     # It uses ML models to residualize treatment and outcome, then runs linear regression on residuals
-                
-                    est = LinearDML(
-                        model_y=RandomForestRegressor(random_state=42),
-                        model_t=RandomForestClassifier(random_state=42),
-                        discrete_treatment=True,
-                        linear_first_stages=False,
-                        cv=3,
-                        random_state=42
-                    )
-                
+                    
+                    # For DML, even if the outcome is binary, we use a Regressor for model_y (LPM approach)
+                    # because LinearDML expects a continuous residual or probability estimate, 
+                    # and passing a Classifier can cause errors if EconML expects a Regressor interface.
+                    model_y = RandomForestRegressor(n_jobs=-1, random_state=42)
+
                     estimate = model.estimate_effect(
                         identified_estimand,
                         method_name="backdoor.econml.dml.LinearDML",
                         method_params={
                             "init_params": {
-                                "model_y": RandomForestRegressor(random_state=42),
-                                "model_t": RandomForestClassifier(random_state=42),
+                                "model_y": model_y,
+                                "model_t": RandomForestClassifier(n_jobs=-1, random_state=42),
                                 "discrete_treatment": True,
                                 "linear_first_stages": False,
                                 "cv": 3,
@@ -559,6 +776,8 @@ if run_analysis:
                     )
                 elif estimation_method == "Propensity Score Matching":
                     st.markdown("#### Method: Propensity Score Matching (PSM)")
+                    if is_binary_outcome:
+                        st.caption("ℹ️ **Binary Outcome**: Estimate represents Risk Difference (Difference in Proportions).")
                     st.markdown("PSM matches treated units with control units that have similar probability of receiving treatment.")
                 
                     st.markdown("**Step 1: Estimate Propensity Score**")
@@ -577,6 +796,8 @@ if run_analysis:
 
                 elif estimation_method == "Inverse Propensity Weighting (IPTW)":
                     st.markdown("#### Method: Inverse Propensity Weighting (IPTW)")
+                    if is_binary_outcome:
+                        st.caption("ℹ️ **Binary Outcome**: Estimate represents Risk Difference (Weighted Difference in Proportions).")
                     st.markdown("IPTW re-weights the data to create a pseudo-population where treatment is independent of confounders.")
                 
                     st.markdown("**Step 1: Estimate Propensity Score**")
@@ -602,13 +823,25 @@ if run_analysis:
                         st.latex(r"f(X, T) \approx Y")
                         st.latex(r"ATE = E[f(X, 1) - f(X, 0)]")
                         method_name = "backdoor.econml.metalearners.SLearner"
-                        init_params = {"overall_model": RandomForestRegressor(random_state=42)}
+                        
+                        if is_binary_outcome:
+                            overall_model = RandomForestClassifier(n_jobs=-1, random_state=42)
+                        else:
+                            overall_model = RandomForestRegressor(n_jobs=-1, random_state=42)
+                            
+                        init_params = {"overall_model": overall_model}
                     else: # T-Learner
                         st.markdown("T-Learner (Two Learners) fits separate models for treated and control groups.")
                         st.latex(r"\mu_1(X) \approx E[Y|T=1, X], \quad \mu_0(X) \approx E[Y|T=0, X]")
                         st.latex(r"ATE = E[\mu_1(X) - \mu_0(X)]")
                         method_name = "backdoor.econml.metalearners.TLearner"
-                        init_params = {"models": RandomForestRegressor(random_state=42)}
+                        
+                        if is_binary_outcome:
+                            models = RandomForestClassifier(n_jobs=-1, random_state=42)
+                        else:
+                            models = RandomForestRegressor(n_jobs=-1, random_state=42)
+                            
+                        init_params = {"models": models}
 
                     estimate = model.estimate_effect(
                         identified_estimand,
@@ -624,13 +857,16 @@ if run_analysis:
                     st.markdown("Causal Forests extend Random Forests to estimate heterogeneous treatment effects (CATE) using an honest splitting criterion.")
                     st.latex(r"\hat{\tau}(x) = \frac{\sum \alpha_i(x) (Y_i - \hat{m}(X_i)) (T_i - \hat{e}(X_i))}{\sum \alpha_i(x) (T_i - \hat{e}(X_i))^2}")
                 
+                    # Use Regressor for model_y (LPM) to avoid errors with binary outcomes
+                    model_y = RandomForestRegressor(n_jobs=-1, random_state=42)
+
                     estimate = model.estimate_effect(
                         identified_estimand,
                         method_name="backdoor.econml.dml.CausalForestDML",
                         method_params={
                             "init_params": {
-                                "model_y": RandomForestRegressor(random_state=42),
-                                "model_t": RandomForestClassifier(random_state=42),
+                                "model_y": model_y,
+                                "model_t": RandomForestClassifier(n_jobs=-1, random_state=42),
                                 "discrete_treatment": True,
                                 "random_state": 42
                             },
@@ -646,66 +882,167 @@ if run_analysis:
                 
                 elif estimation_method == "Difference-in-Differences (DiD)":
                     st.markdown("#### Method: Difference-in-Differences (DiD)")
+                    
+                    use_logit = False
+                    if is_binary_outcome:
+                        use_logit = True
+                        st.caption("ℹ️ **Binary Outcome**: Using **Logit Model** (Logistic Regression) to estimate **Odds Ratio**.")
+                    
                     if not time_period:
                         st.error("Please select a Time Period in the sidebar.")
                         st.stop()
-
+                    
                     st.markdown("DiD compares the changes in outcomes over time between a treatment group and a control group.")
-                    st.latex(r"ATE = (E[Y|T=1, Post] - E[Y|T=1, Pre]) - (E[Y|T=0, Post] - E[Y|T=0, Pre])")
-                
-                    # For DiD, we need the interaction term: Treatment * Time
-                    # Y = a + b1*T + b2*Time + b3*(T*Time) + e
-                    # The effect is b3.
+                    if use_logit:
+                        st.latex(r"\text{Logit Model: } \log\left(\frac{P(Y=1)}{1-P(Y=1)}\right) = \beta_0 + \beta_1 T + \beta_2 \text{Time} + \beta_3 (T \times \text{Time}) + \dots")
+                        st.latex(r"\text{Odds Ratio (Interaction)} = e^{\beta_3}")
+                    else:
+                        st.latex(r"ATE = (E[Y|T=1, Post] - E[Y|T=1, Pre]) - (E[Y|T=0, Post] - E[Y|T=0, Pre])")
                     
+                    # Manual DiD Implementation (OLS or Logit)
                     # Create interaction term
-                    df['DiD_Interaction'] = df[treatment] * df[time_period]
+                    df_did = df.copy()
+                    df_did['DiD_Interaction'] = df_did[treatment] * df_did[time_period]
                     
-                    # Prepare features for Linear Regression
-                    # We use sklearn or statsmodels. Let's use statsmodels for nice summary if available, 
-                    # but we have sklearn imported. Let's use sklearn for consistency with other parts or simple OLS.
-                    # Actually, we want standard errors. DoWhy's linear_regression gives SEs.
-                    # We can trick DoWhy by passing the interaction as a "confounder" or "modifier"? No.
+                    # Define X (Treatment, Time, Interaction, Confounders)
+                    X_cols = [treatment, time_period, 'DiD_Interaction']
+                    if confounders:
+                        X_cols.extend(confounders)
+                    X_did = df_did[X_cols]
+                    X_did = sm.add_constant(X_did)
+                    y_did = df_did[outcome]
+                    
+                    if use_logit:
+                        try:
+                            did_model = sm.Logit(y_did, X_did).fit(disp=0)
+                            did_coeff = did_model.params['DiD_Interaction']
+                            did_pvalue = did_model.pvalues['DiD_Interaction']
+                            did_conf_int = did_model.conf_int().loc['DiD_Interaction']
+                            odds_ratio = np.exp(did_coeff)
+                            
+                            st.markdown(f"**Estimated Odds Ratio (Interaction): {odds_ratio:.4f}**")
+                            st.markdown(f"**Log-Odds Coefficient:** {did_coeff:.4f}")
+                            st.markdown(f"**P-value:** {did_pvalue:.4f}")
+                            st.markdown(f"**95% CI (Log-Odds):** [{did_conf_int[0]:.4f}, {did_conf_int[1]:.4f}]")
+                            
+                            # Convert OR to Risk Difference (Approximate)
+                            # Baseline Risk (Control Group in Post Period - or overall Control)
+                            # Let's use the overall Control group mean as a reference baseline
+                            baseline_risk = df_did[df_did[treatment] == 0][outcome].mean()
+                            if 0 < baseline_risk < 1:
+                                def or_to_rd(odds_ratio, p0):
+                                    return (odds_ratio * p0 / (1 - p0 + (odds_ratio * p0))) - p0
+                                
+                                implied_risk_diff = or_to_rd(odds_ratio, baseline_risk)
+                                
+                                # Convert CI
+                                or_lower = np.exp(did_conf_int[0])
+                                or_upper = np.exp(did_conf_int[1])
+                                rd_lower = or_to_rd(or_lower, baseline_risk)
+                                rd_upper = or_to_rd(or_upper, baseline_risk)
+                                
+                                st.markdown(f"**Implied Risk Difference (at Baseline Risk {baseline_risk:.2%}):** {implied_risk_diff:+.2%}")
+                                st.markdown(f"**Implied RD 95% CI:** [{rd_lower:+.2%}, {rd_upper:+.2%}]")
+                                st.caption("Note: Implied Risk Difference is calculated based on the observed control group mean.")
+                            
+                            # Create a dummy estimate object for compatibility (optional, or just skip standard display)
+                            estimate = type('obj', (object,), {'value': did_coeff, 'estimator': type('obj', (object,), {'__str__': lambda self: "Logistic Regression (DiD)"})()})
+                        except Exception as e:
+                            st.error(f"Logit Model Failed: {e}")
+                            st.stop()
+                        
+                    else:
+                        try:
+                            did_model = sm.OLS(y_did, X_did).fit()
+                            if 'DiD_Interaction' in did_model.params:
+                                did_estimate = did_model.params['DiD_Interaction']
+                                st.markdown(f"**Estimated ATE (Interaction Coefficient): {did_estimate:.4f}**")
+                                st.write(did_model.summary())
+                                estimate = type('obj', (object,), {'value': did_estimate})
+                            else:
+                                st.error("DiD Interaction term dropped (likely due to collinearity). Check your data.")
+                                st.stop()
+                        except Exception as e:
+                            st.error(f"LPM (OLS) Failed: {e}")
+                            st.stop()
+                    
+                    # We skip standard DoWhy estimation for DiD because we did it manually
+                    # But we need 'estimate' object for Refutation if we were to run it (Refutation disabled for DiD)
                     
                     # Let's use statsmodels for the DiD specific regression to get the p-value and summary.
                     import statsmodels.api as sm
                     
-                    X_did = df[[treatment, time_period, 'DiD_Interaction']]
-                    if confounders:
-                        X_did = pd.concat([X_did, df[confounders]], axis=1)
-                    
-                    X_did = sm.add_constant(X_did)
-                    y_did = df[outcome]
-                    
-                    did_model = sm.OLS(y_did, X_did).fit()
-                    
-                    did_estimate = did_model.params['DiD_Interaction']
-                    
-                    # Create a dummy estimate object to match the flow
-                    estimate = type('obj', (object,), {
-                        'value': did_estimate,
-                        'params': did_model.params
-                    })
-                    
-                    st.write(did_model.summary())
-                    st.info(f"DiD Estimate (Interaction Term): {did_estimate:.4f}")
-                    
-                    # Skip the default DoWhy estimate for DiD as we did it manually
-                    estimate.value = did_estimate # Ensure downstream usage works if any
 
-                elif estimation_method == "A/B Test (Difference in Means)":
-                    st.markdown("#### Method: A/B Test (Difference in Means)")
+
+                elif estimation_method == "OLS/Logit":
+                    st.markdown("#### Method: OLS/Logit")
+                    
+                    use_logit = False
+                    if is_binary_outcome:
+                        use_logit = True
+                        st.caption("ℹ️ **Binary Outcome**: Using **Logit Model** (Logistic Regression) to estimate **Odds Ratio**.")
+                    
                     st.markdown("Simple comparison of average outcomes between treatment and control groups.")
-                    st.latex(r"ATE = E[Y|T=1] - E[Y|T=0]")
-                
-                    # We use Linear Regression (OLS) Y ~ T (+ X)
-                    # This provides ATE and standard errors.
-                
-                    estimate = model.estimate_effect(
-                        identified_estimand,
-                        method_name="backdoor.linear_regression",
-                        test_significance=True
-                    )
-                
+                    
+                    if use_logit:
+                        st.latex(r"\text{Odds Ratio} = \frac{P(Y=1|T=1)/P(Y=0|T=1)}{P(Y=1|T=0)/P(Y=0|T=0)}")
+                        
+                        try:
+                            # Manual Logit Implementation for A/B
+                            X_ab_cols = [treatment]
+                            if confounders:
+                                X_ab_cols.extend(confounders)
+                            X_ab = df[X_ab_cols]
+                            X_ab = sm.add_constant(X_ab)
+                            y_ab = df[outcome]
+                            
+                            ab_model = sm.Logit(y_ab, X_ab).fit(disp=0)
+                            ab_coeff = ab_model.params[treatment]
+                            ab_pvalue = ab_model.pvalues[treatment]
+                            ab_conf_int = ab_model.conf_int().loc[treatment]
+                            odds_ratio = np.exp(ab_coeff)
+                            
+                            st.markdown(f"**Estimated Odds Ratio: {odds_ratio:.4f}**")
+                            st.markdown(f"**Log-Odds Coefficient:** {ab_coeff:.4f}")
+                            st.markdown(f"**P-value:** {ab_pvalue:.4f}")
+                            st.markdown(f"**95% CI (Log-Odds):** [{ab_conf_int[0]:.4f}, {ab_conf_int[1]:.4f}]")
+                            
+                            # Convert OR to Risk Difference
+                            # Baseline Risk (Control Group)
+                            baseline_risk = df[df[treatment] == 0][outcome].mean()
+                            if 0 < baseline_risk < 1:
+                                def or_to_rd(odds_ratio, p0):
+                                    return (odds_ratio * p0 / (1 - p0 + (odds_ratio * p0))) - p0
+                                    
+                                implied_risk_diff = or_to_rd(odds_ratio, baseline_risk)
+                                
+                                # Convert CI
+                                or_lower = np.exp(ab_conf_int[0])
+                                or_upper = np.exp(ab_conf_int[1])
+                                rd_lower = or_to_rd(or_lower, baseline_risk)
+                                rd_upper = or_to_rd(or_upper, baseline_risk)
+                                
+                                st.markdown(f"**Implied Risk Difference (at Baseline Risk {baseline_risk:.2%}):** {implied_risk_diff:+.2%}")
+                                st.markdown(f"**Implied RD 95% CI:** [{rd_lower:+.2%}, {rd_upper:+.2%}]")
+                                st.caption("Note: Implied Risk Difference is calculated based on the observed control group mean.")
+                            
+                            estimate = type('obj', (object,), {'value': ab_coeff})
+                        except Exception as e:
+                            st.error(f"Logit Model Failed: {e}")
+                            st.stop()
+                        
+                    else:
+                        st.latex(r"ATE = E[Y|T=1] - E[Y|T=0]")
+                        try:
+                            estimate = model.estimate_effect(
+                                identified_estimand,
+                                method_name="backdoor.linear_regression",
+                                test_significance=True
+                            )
+                        except Exception as e:
+                            st.error(f"LPM Estimation Failed: {e}")
+                            st.stop()
+                    
                     if confounders:
                         st.info("Note: Confounders included in regression (CUPED / Variance Reduction).")
                     else:
@@ -804,7 +1141,12 @@ if run_analysis:
 
             # --- Bootstrapping for SE ---
             # Bootstrapping is now default and configured in sidebar
+        # --- 4. Bootstrapping (if enabled) ---
+        se = None
+        ci_lower = None
+        ci_upper = None
         
+        if n_iterations > 0:
             bootstrap_estimates = []
             progress_bar = st.progress(0)
         
@@ -894,7 +1236,7 @@ if run_analysis:
                                 method_name="backdoor.linear_regression",
                                 test_significance=False # Speed up
                             )
-                        elif estimation_method == "A/B Test (Difference in Means)":
+                        elif estimation_method == "OLS/Logit":
                                 est_boot = model_boot.estimate_effect(
                                 identified_estimand_boot,
                                 method_name="backdoor.linear_regression",
@@ -910,15 +1252,18 @@ if run_analysis:
         
             if len(bootstrap_estimates) > 0:
                 se = np.std(bootstrap_estimates)
-                ci = (np.percentile(bootstrap_estimates, 2.5), np.percentile(bootstrap_estimates, 97.5))
+                ci_lower = np.percentile(bootstrap_estimates, 2.5)
+                ci_upper = np.percentile(bootstrap_estimates, 97.5)
                 st.success(f"Bootstrapping complete. Used {len(bootstrap_estimates)} successful iterations.")
             else:
                 st.error("Bootstrapping failed for all iterations.")
+        else:
+            st.info("Bootstrapping disabled. Standard Errors and Confidence Intervals will not be calculated.")
 
             # Display Metrics
             col_ate, col_se = st.columns(2)
             with col_ate:
-                st.metric(label="Average Treatment Effect (ATE)", value=f"${ate:.2f}")
+                st.metric(label="Average Treatment Effect (ATE)", value=f"{ate:.2f}")
             with col_se:
                 if se is not None:
                     st.metric(label="Standard Error (SE)", value=f"{se:.2f}")
@@ -930,16 +1275,16 @@ if run_analysis:
                 st.caption("(Computed via Bootstrapping)")
         
             st.info(
-                f"**Interpretation:** On average, `{treatment}` increases `{outcome}` by **${ate:.2f}** "
+                f"**Interpretation:** On average, `{treatment}` increases `{outcome}` by **{ate:.2f}** "
                 "after accounting for confounding variables."
             )
 
             # --- Step 4: Refute ---
-            # --- Step 4: Refute ---
+            # Refutation (Step 4)
             st.subheader("4. Refutation")
             
-            if estimation_method == "Difference-in-Differences (DiD)":
-                 st.warning("Refutation tests are not currently supported for the manual Difference-in-Differences implementation.")
+            if estimation_method == "Difference-in-Differences (DiD)" or (is_binary_outcome and use_logit):
+                st.warning("Refutation tests are not currently supported for this method/configuration (Manual Implementation).")
             else:
                 st.markdown("**Methodology:** Random Common Cause Test")
                 st.markdown("We add a random variable $W_{random}$ as a common cause to the dataset.")
@@ -1105,7 +1450,7 @@ if run_analysis:
                     st.error(f"Error calculating ITEs: {e}")
                     df_results = df.copy()
 
-            elif estimation_method in ["A/B Test (Difference in Means)", "Difference-in-Differences (DiD)"]:
+            elif estimation_method in ["OLS/Logit", "Difference-in-Differences (DiD)"]:
                 st.markdown("#### Heterogeneity Analysis")
                 st.markdown("Analyze how the treatment effect varies across different subgroups.")
                 
@@ -1128,7 +1473,7 @@ if run_analysis:
                         
                         for i, feature in enumerate(valid_covariates):
                             try:
-                                if estimation_method == "A/B Test (Difference in Means)":
+                                if estimation_method == "OLS/Logit":
                                     # Model: Y ~ T + X + T*X + Confounders
                                     df['HTE_Interaction'] = df[treatment] * df[feature]
                                     X_hte = df[[treatment, feature, 'HTE_Interaction']]
@@ -1216,9 +1561,6 @@ if run_analysis:
             # Note: Some variables like 'percentile' are only defined if winsorize_enable is True
             # We'll use defaults or current values.
         
-            # Helper to safely get variable or default
-            def safe_get(var_name, default):
-                return locals().get(var_name, default)
 
             script = generate_script(
                 data_source=data_source,
@@ -1238,11 +1580,17 @@ if run_analysis:
                 log_transform_cols=log_transform_cols,
                 standardize_cols=standardize_cols,
                 n_iterations=n_iterations,
-                control_val=safe_get('control_val', None),
-                treat_val=safe_get('treat_val', None),
-                hte_features=valid_covariates if 'valid_covariates' in locals() else (valid_covariates_cate if 'valid_covariates_cate' in locals() else None)
+                control_val=control_val if 'control_val' in locals() else None,
+                treat_val=treat_val if 'treat_val' in locals() else None,
+                hte_features=valid_covariates if 'valid_covariates' in locals() else (valid_covariates_cate if 'valid_covariates_cate' in locals() else None),
+                use_logit=use_logit,
+                bucketing_ops=st.session_state.bucketing_ops,
+                filtering_ops=st.session_state.filtering_ops
             )
         
+            with st.expander("View Generated Python Script"):
+                st.code(script, language='python')
+
             st.download_button(
                 label="Download Python Script",
                 data=script,
