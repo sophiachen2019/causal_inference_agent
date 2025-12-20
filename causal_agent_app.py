@@ -443,6 +443,21 @@ with tab_eda:
         })
         st.dataframe(missing_info.style.format({'Missing Percentage': '{:.2f}%'}))
 
+    with st.expander("Show Correlation Matrix", expanded=False):
+        st.markdown("**Correlation Matrix**")
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if len(numeric_cols) > 1:
+            corr_cols = st.multiselect("Select Variables", numeric_cols, default=numeric_cols)
+            
+            if corr_cols:
+                corr_matrix = df[corr_cols].corr()
+                st.dataframe(corr_matrix.style.background_gradient(cmap='coolwarm', axis=None).format("{:.2f}"))
+            else:
+                st.info("Please select at least one variable.")
+        else:
+            st.info("Not enough numeric variables to compute correlation.")
+
     # --- Chart Builder ---
     st.subheader("5. Visualization (Chart Builder)")
     
@@ -627,6 +642,7 @@ with tab_guide:
         - **Data Filtering**: Filter your dataset based on specific conditions (e.g., Region == 'North').
     - **Exploratory Analysis**:
         - **Data Preview**: View your raw and processed data.
+        - **Correlation Matrix**: Analyze relationships between numeric variables.
         - **Chart Builder**: Create custom visualizations with **Aggregation** (Mean, Sum, Count, Median, Min, Max).
     - **Causal Analysis**:
         - **Binary Outcome Support**: Automatically detects binary outcomes (e.g., Conversion).
