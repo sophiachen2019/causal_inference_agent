@@ -226,8 +226,14 @@ print("Standardization applied to: {', '.join(standardize_cols)}")
 outcome = '{outcome}'
 confounders = {confounders}
 instrument = None
-effect_modifiers = confounders # Using confounders as effect modifiers for heterogeneity
 use_logit = {use_logit}
+
+# Only use confounders as effect modifiers for HTE-capable ML methods
+if "{estimation_method}" in ["Double Machine Learning (LinearDML)", "Causal Forest (DML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
+    effect_modifiers = confounders
+else:
+    effect_modifiers = []
+
 
 # Check for Binary Outcome
 is_binary_outcome = False
@@ -435,7 +441,7 @@ model = CausalModel(
     script += f"                outcome='{outcome}',\n"
     script += f"                common_causes={confounders},\n"
     script += "                instruments=instrument,\n"
-    script += f"                effect_modifiers={confounders}\n"
+    script += "                effect_modifiers=effect_modifiers\n"
     script += "            )\n"
     
     script += "            identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)\n"
