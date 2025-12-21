@@ -2,7 +2,8 @@ import streamlit as st
 
 import pandas as pd
 import numpy as np
-import dowhy
+import numpy as np
+# import dowhy # Unused directly
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 
 from sklearn.preprocessing import StandardScaler
@@ -14,6 +15,11 @@ from dowhy import CausalModel
 from scipy import stats
 import statsmodels.api as sm
 
+def get_index(columns, default_name, default_idx):
+    if default_name in columns:
+        return list(columns).index(default_name)
+    return default_idx if default_idx < len(columns) else 0
+
 
 # Import custom utils with explicit reload to ensure updates are picked up
 import causal_utils
@@ -22,6 +28,13 @@ importlib.reload(causal_utils)
 from causal_utils import generate_script
 
 # --- 1. Data Simulation ---
+if 'analysis_run' not in st.session_state:
+    st.session_state.analysis_run = False
+if 'bucketing_ops' not in st.session_state:
+    st.session_state.bucketing_ops = []
+if 'filtering_ops' not in st.session_state:
+    st.session_state.filtering_ops = []
+
 @st.cache_data
 def simulate_data(n_samples=1000):
     np.random.seed(42)
@@ -548,10 +561,7 @@ with tab_causal:
     st.header("Causal Analysis Configuration")
     
     # Ensure columns exist in df (handle case where upload might have different columns)
-    def get_index(columns, default_name, default_idx):
-        if default_name in columns:
-            return list(columns).index(default_name)
-        return default_idx if default_idx < len(columns) else 0
+
 
     estimation_method = st.selectbox(
         "Estimation Method",
@@ -612,7 +622,12 @@ with tab_causal:
     else:
         n_iterations = 0
 
-    run_analysis = st.button("Run Causal Analysis", type="primary")
+    def on_run_click():
+        st.session_state.analysis_run = True
+
+    st.button("Run Causal Analysis", type="primary", on_click=on_run_click)
+
+
 
 # ==========================================
 # ==========================================
@@ -672,7 +687,7 @@ with tab_guide:
     | **Meta-Learners (S/T-Learner)** | For estimating Heterogeneous Treatment Effects (HTE) using Machine Learning. |
     
     #### Step 3: Interpret Results
-    - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
+    - **Average Treatment Effect (ATE)**: The overall impact of the intervention, with standard error and confidence interval.
     - **Heterogeneity (HTE)**:
         - **Linear Methods**: Look for the "Interaction Coefficient". A significant p-value (< 0.05) means the effect varies by that feature.
         - **CATE Methods**: Look for the "Effect Modification" table. It shows which features drive the differences in individual effects.
@@ -681,7 +696,8 @@ with tab_guide:
         - **Random Common Cause**: Should not change the estimate significantly.
         
     ### 4. Exporting Code
-    Click **Download Python Script** to get a standalone Python file containing the full analysis code. You can run this locally to reproduce the results or integrate it into your pipeline.
+    - **View Generated Script**: Preview the full Python code directly in the app.
+    - **Download Python Script**: Get a standalone Python file containing the analysis. You can run this locally to reproduce the results or integrate it into your pipeline.
     
     ### 5. Version History
 
@@ -699,10 +715,11 @@ with tab_guide:
     else:
         st.warning("No version history found.")
 
-if run_analysis:
+# Analysis Block
+if st.session_state.get('analysis_run', False):
     with tab_causal: # Ensure results render in the Causal Tab
 
-        if True: # Placeholder to maintain indentation level for now, or we can dedent. 
+        with st.container(): # Main results container 
             # Ideally we dedent the whole block, but to minimize diff noise let's just remove the check.
             # Actually, let's just remove the if/else and dedent.
             pass
@@ -718,6 +735,13 @@ if run_analysis:
             st.markdown("- $E$: Causal edges representing direct effects.")
             st.markdown("Assumption: **Causal Markov Assumption** (each variable is independent of its non-descendants given its parents).")
         
+            # Only use confounders as effect modifiers for HTE-capable ML methods
+            # For OLS/Logit, we want a simple adjustment without interaction terms in the main ATE model.
+            if estimation_method in ["Double Machine Learning (LinearDML)", "Causal Forest (DML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
+                modifiers = confounders
+            else:
+                modifiers = []
+
             with st.spinner("Building Causal Graph..."):
                 model = CausalModel(
                     data=df,
@@ -725,7 +749,7 @@ if run_analysis:
                     outcome=outcome,
                     common_causes=confounders,
                     instruments=None,
-                    effect_modifiers=confounders
+                    effect_modifiers=modifiers
                 )
         
             st.success("Model built successfully!")
@@ -1055,6 +1079,40 @@ if run_analysis:
                                 method_name="backdoor.linear_regression",
                                 test_significance=True
                             )
+                            
+                            # Extract and Display Detailed Stats
+                            try:
+                                # DoWhy's LinearRegressionEstimator uses statsmodels internally
+                                # Accessing the internal model to get summary stats
+                                if hasattr(estimate.estimator, 'model'):
+                                    sm_model = estimate.estimator.model
+                                    # The treatment coefficient name might vary, usually it's the treatment name
+                                    # But DoWhy might rename it. Let's check params.
+                                    # Actually, estimate.value is the coefficient.
+                                    # We can try to find the corresponding index or name.
+                                    
+                                    # Simpler approach: Use the test_significance results if available
+                                    # But DoWhy's test_significance printout is just a print.
+                                    
+                                    # Let's try to show the full summary which is very informative
+                                    st.markdown("**Regression Results:**")
+                                    st.write(sm_model.summary())
+                                    
+                                    # Explicitly show SE and CI for Treatment
+                                    # We need to identify the treatment variable name in the model
+                                    # DoWhy usually keeps it as is or adds prefix.
+                                    # Let's look at pvalues index
+                                    treat_var = treatment
+                                    if treat_var in sm_model.pvalues:
+                                        se = sm_model.bse[treat_var]
+                                        pval = sm_model.pvalues[treat_var]
+                                        ci = sm_model.conf_int().loc[treat_var]
+                                        
+                                        st.markdown(f"**Standard Error:** {se:.4f}")
+                                        st.markdown(f"**P-value:** {pval:.4f}")
+                                        st.markdown(f"**95% CI:** [{ci[0]:.4f}, {ci[1]:.4f}]")
+                            except Exception as e:
+                                st.warning(f"Could not extract detailed stats: {e}")
                         except Exception as e:
                             st.error(f"LPM Estimation Failed: {e}")
                             st.stop()
@@ -1158,123 +1216,133 @@ if run_analysis:
             # --- Bootstrapping for SE ---
             # Bootstrapping is now default and configured in sidebar
         # --- 4. Bootstrapping (if enabled) ---
-        se = None
-        ci_lower = None
-        ci_upper = None
-        
-        if n_iterations > 0:
-            bootstrap_estimates = []
-            progress_bar = st.progress(0)
-        
-            with st.spinner(f"Running {n_iterations} bootstrap iterations..."):
-                for i in range(n_iterations):
-                    # Resample with replacement
-                    df_resampled = df.sample(frac=1, replace=True, random_state=i) # Use i as seed for reproducibility of the set
-                
-                    # Re-define model on resampled data
-                    # Note: We must re-instantiate CausalModel to avoid state leakage
-                    model_boot = CausalModel(
-                        data=df_resampled,
-                        treatment=treatment,
-                        outcome=outcome,
-                        common_causes=confounders,
-                        instruments=None,
-                        effect_modifiers=confounders
-                    )
-                
-                    identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)
-                
-                    # Re-estimate
-                    # We need to use the exact same method and params
-                    # This duplication is a bit verbose but necessary to ensure same config
-                    try:
-                        if estimation_method == "Double Machine Learning (LinearDML)":
-                            est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name="backdoor.econml.dml.LinearDML",
-                                method_params={
-                                    "init_params": {
-                                        "model_y": RandomForestRegressor(random_state=42),
-                                        "model_t": RandomForestClassifier(random_state=42),
-                                        "discrete_treatment": True,
-                                        "random_state": 42
-                                    },
-                                    "fit_params": {}
-                                }
-                            )
-                        elif estimation_method == "Propensity Score Matching":
-                                est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name="backdoor.propensity_score_matching"
-                            )
-                        elif estimation_method == "Inverse Propensity Weighting (IPTW)":
-                                est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name="backdoor.propensity_score_weighting"
-                            )
-                        elif "Meta-Learner" in estimation_method:
-                            learner_type = estimation_method.split(": ")[1]
-                            if learner_type == "S-Learner":
-                                method_name = "backdoor.econml.metalearners.SLearner"
-                                init_params = {"overall_model": RandomForestRegressor(random_state=42)}
-                            else:
-                                method_name = "backdoor.econml.metalearners.TLearner"
-                                init_params = {"models": RandomForestRegressor(random_state=42)}
-                        
-                            est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name=method_name,
-                                method_params={
-                                    "init_params": init_params,
-                                    "fit_params": {}
-                                }
-                            )
-                        elif estimation_method == "Causal Forest (DML)":
-                                est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name="backdoor.econml.dml.CausalForestDML",
-                                method_params={
-                                    "init_params": {
-                                        "model_y": RandomForestRegressor(random_state=42),
-                                        "model_t": RandomForestClassifier(random_state=42),
-                                        "discrete_treatment": True,
-                                        "random_state": 42
-                                    },
-                                    "fit_params": {}
-                                }
-                            )
-                        elif estimation_method == "Instrumental Variables (IV)":
-                                # Removed IV support
-                                continue # Skip this iteration if IV is selected
-                        elif estimation_method == "Difference-in-Differences (DiD)":
-                                est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name="backdoor.linear_regression",
-                                test_significance=False # Speed up
-                            )
-                        elif estimation_method == "OLS/Logit":
-                                est_boot = model_boot.estimate_effect(
-                                identified_estimand_boot,
-                                method_name="backdoor.linear_regression",
-                                test_significance=False # Speed up
-                            )
+            se = None
+            ci_lower = None
+            ci_upper = None
+            
+            if n_iterations > 0:
+                bootstrap_estimates = []
+                progress_bar = st.progress(0)
+            
+                with st.spinner(f"Running {n_iterations} bootstrap iterations..."):
+                    for i in range(n_iterations):
+                        # Resample with replacement
+                        df_resampled = df.sample(frac=1, replace=True, random_state=i) # Use i as seed for reproducibility of the set
                     
-                        bootstrap_estimates.append(est_boot.value)
-                
-                    except Exception:
-                        pass # Skip failed iterations
-                
-                    progress_bar.progress((i + 1) / n_iterations)
-        
-            if len(bootstrap_estimates) > 0:
-                se = np.std(bootstrap_estimates)
-                ci_lower = np.percentile(bootstrap_estimates, 2.5)
-                ci_upper = np.percentile(bootstrap_estimates, 97.5)
-                st.success(f"Bootstrapping complete. Used {len(bootstrap_estimates)} successful iterations.")
+                        # Re-define model on resampled data
+                        # Note: We must re-instantiate CausalModel to avoid state leakage
+                        # Use same modifier logic as main model
+                        if estimation_method in ["Double Machine Learning (LinearDML)", "Causal Forest (DML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
+                            modifiers_boot = confounders
+                        else:
+                            modifiers_boot = []
+    
+                        model_boot = CausalModel(
+                            data=df_resampled,
+                            treatment=treatment,
+                            outcome=outcome,
+                            common_causes=confounders,
+                            instruments=None,
+                            effect_modifiers=modifiers_boot
+                        )
+                    
+                        identified_estimand_boot = model_boot.identify_effect(proceed_when_unidentifiable=True)
+                    
+                        # Re-estimate
+                        # We need to use the exact same method and params
+                        # This duplication is a bit verbose but necessary to ensure same config
+                        try:
+                            if estimation_method == "Double Machine Learning (LinearDML)":
+                                est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name="backdoor.econml.dml.LinearDML",
+                                    method_params={
+                                        "init_params": {
+                                            "model_y": RandomForestRegressor(random_state=42),
+                                            "model_t": RandomForestClassifier(random_state=42),
+                                            "discrete_treatment": True,
+                                            "random_state": 42
+                                        },
+                                        "fit_params": {}
+                                    }
+                                )
+                            elif estimation_method == "Propensity Score Matching":
+                                    est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name="backdoor.propensity_score_matching"
+                                )
+                            elif estimation_method == "Inverse Propensity Weighting (IPTW)":
+                                    est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name="backdoor.propensity_score_weighting"
+                                )
+                            elif "Meta-Learner" in estimation_method:
+                                learner_type = estimation_method.split(": ")[1]
+                                if learner_type == "S-Learner":
+                                    method_name = "backdoor.econml.metalearners.SLearner"
+                                    init_params = {"overall_model": RandomForestRegressor(random_state=42)}
+                                else:
+                                    method_name = "backdoor.econml.metalearners.TLearner"
+                                    init_params = {"models": RandomForestRegressor(random_state=42)}
+                            
+                                est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name=method_name,
+                                    method_params={
+                                        "init_params": init_params,
+                                        "fit_params": {}
+                                    }
+                                )
+                            elif estimation_method == "Causal Forest (DML)":
+                                    est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name="backdoor.econml.dml.CausalForestDML",
+                                    method_params={
+                                        "init_params": {
+                                            "model_y": RandomForestRegressor(random_state=42),
+                                            "model_t": RandomForestClassifier(random_state=42),
+                                            "discrete_treatment": True,
+                                            "random_state": 42
+                                        },
+                                        "fit_params": {}
+                                    }
+                                )
+                            elif estimation_method == "Instrumental Variables (IV)":
+                                    # Removed IV support
+                                    continue # Skip this iteration if IV is selected
+                            elif estimation_method == "Difference-in-Differences (DiD)":
+                                    est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name="backdoor.linear_regression",
+                                    test_significance=False # Speed up
+                                )
+                            elif estimation_method == "OLS/Logit":
+                                    est_boot = model_boot.estimate_effect(
+                                    identified_estimand_boot,
+                                    method_name="backdoor.linear_regression",
+                                    test_significance=False # Speed up
+                                )
+                                    # For Logit, we might need to extract the coefficient differently if we want OR
+                                    # But for SE calculation, we usually want SE of the coefficient (log-odds)
+                                    # est_boot.value should be the coefficient.
+    
+                        
+                            bootstrap_estimates.append(est_boot.value)
+                    
+                        except Exception:
+                            pass # Skip failed iterations
+                    
+                        progress_bar.progress((i + 1) / n_iterations)
+            
+                if len(bootstrap_estimates) > 0:
+                    se = np.std(bootstrap_estimates)
+                    ci_lower = np.percentile(bootstrap_estimates, 2.5)
+                    ci_upper = np.percentile(bootstrap_estimates, 97.5)
+                    st.success(f"Bootstrapping complete. Used {len(bootstrap_estimates)} successful iterations.")
+                else:
+                    st.error("Bootstrapping failed for all iterations.")
             else:
-                st.error("Bootstrapping failed for all iterations.")
-        else:
-            st.info("Bootstrapping disabled. Standard Errors and Confidence Intervals will not be calculated.")
+                st.info("Bootstrapping disabled. Standard Errors and Confidence Intervals will not be calculated.")
 
             # Display Metrics
             col_ate, col_se = st.columns(2)
@@ -1578,47 +1646,45 @@ if run_analysis:
             # We'll use defaults or current values.
         
 
-            script = generate_script(
-                data_source=data_source,
-                treatment=treatment,
-                outcome=outcome,
-                confounders=confounders,
-                time_period=time_period,
-                estimation_method=estimation_method,
-                impute_enable=impute_enable,
-                num_impute_method=num_impute_method if impute_enable else None,
-                num_custom_val=num_custom_val if impute_enable and num_impute_method == "Custom Value" else 0.0,
-                cat_impute_method=cat_impute_method if impute_enable else None,
-                cat_custom_val=cat_custom_val if impute_enable and cat_impute_method == "Custom Value" else "Missing",
-                winsorize_enable=winsorize_enable,
-                winsorize_cols=winsorize_cols if winsorize_enable else [],
-                percentile=percentile if winsorize_enable else 0.05,
-                log_transform_cols=log_transform_cols,
-                standardize_cols=standardize_cols,
-                n_iterations=n_iterations,
-                control_val=control_val if 'control_val' in locals() else None,
-                treat_val=treat_val if 'treat_val' in locals() else None,
-                hte_features=valid_covariates if 'valid_covariates' in locals() else (valid_covariates_cate if 'valid_covariates_cate' in locals() else None),
-                use_logit=use_logit,
-                bucketing_ops=st.session_state.bucketing_ops,
-                filtering_ops=st.session_state.filtering_ops
-            )
-        
-            with st.expander("View Generated Python Script"):
-                st.code(script, language='python')
+            # Debug: Check if variables are available
+            # st.write(f"Debug: data_source={data_source}")
+            # st.write(f"Debug: control_val={control_val if 'control_val' in locals() else 'Not Found'}")
+            
+            try:
+                script = generate_script(
+                    data_source=data_source,
+                    treatment=treatment,
+                    outcome=outcome,
+                    confounders=confounders,
+                    time_period=time_period,
+                    estimation_method=estimation_method,
+                    impute_enable=impute_enable,
+                    num_impute_method=num_impute_method if impute_enable else None,
+                    num_custom_val=num_custom_val if impute_enable and num_impute_method == "Custom Value" else 0.0,
+                    cat_impute_method=cat_impute_method if impute_enable else None,
+                    cat_custom_val=cat_custom_val if impute_enable and cat_impute_method == "Custom Value" else "Missing",
+                    winsorize_enable=winsorize_enable,
+                    winsorize_cols=winsorize_cols if winsorize_enable else [],
+                    percentile=percentile if winsorize_enable else 0.05,
+                    log_transform_cols=log_transform_cols,
+                    standardize_cols=standardize_cols,
+                    n_iterations=n_iterations,
+                    control_val=control_val if 'control_val' in locals() else None,
+                    treat_val=treat_val if 'treat_val' in locals() else None,
+                    hte_features=valid_covariates if 'valid_covariates' in locals() else (valid_covariates_cate if 'valid_covariates_cate' in locals() else None),
+                    use_logit=use_logit,
+                    bucketing_ops=st.session_state.bucketing_ops,
+                    filtering_ops=st.session_state.filtering_ops
+                )
+            
+                with st.expander("View Generated Python Script"):
+                    st.code(script, language='python')
 
-            st.download_button(
-                label="Download Python Script",
-                data=script,
-                file_name="causal_analysis.py",
-                mime="text/x-python"
-            )
-
-        # --- Decisioning ---
-        st.divider()
-        st.header("💡 Recommendation")
-    
-        if ate > 0:
-            st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **positive** impact on **{outcome}**.\\n\\n**Action:**\\n- Roll out this feature to more customers.\\n- Invest in marketing campaigns to drive adoption.")
-        else:
-            st.markdown(f"Based on the causal analysis, adopting **{treatment}** has a **negligible or negative** impact on **{outcome}**.\\n\\n**Action:**\\n- Re-evaluate the value proposition.\\n- Do not prioritize broad rollout at this time.")
+                st.download_button(
+                    label="Download Python Script",
+                    data=script,
+                    file_name="causal_analysis.py",
+                    mime="text/x-python"
+                )
+            except Exception as e:
+                st.error(f"Error generating script: {e}")
