@@ -736,7 +736,7 @@ if st.session_state.get('analysis_run', False):
         
             # Only use confounders as effect modifiers for HTE-capable ML methods
             # For OLS/Logit, we want a simple adjustment without interaction terms in the main ATE model.
-            if estimation_method in ["Double Machine Learning (LinearDML)", "Causal Forest (DML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
+            if estimation_method in ["Linear Double Machine Learning (LinearDML)", "Generalized Random Forests (CausalForestDML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
                 modifiers = confounders
             else:
                 modifiers = []
@@ -772,11 +772,12 @@ if st.session_state.get('analysis_run', False):
             st.write("Identified Estimand Type:", identified_estimand.estimand_type)
         
             # --- Step 3: Estimate (using EconML / DML) ---
-            st.subheader(f"3. Estimation ({estimation_method})")
+            st.subheader("3. Estimation")
             with st.spinner(f"Estimating Causal Effect using {estimation_method}..."):
             
                 use_logit = False # Initialize to avoid NameError in Refutation
-                if estimation_method == "Double Machine Learning (LinearDML)":
+                estimate = None # Initialize to avoid UnboundLocalError
+                if estimation_method == "Linear Double Machine Learning (LinearDML)":
                     st.markdown("#### Method: Double Machine Learning (DML)")
                     st.markdown("DML removes the effect of confounders ($X$) from both treatment ($T$) and outcome ($Y$) using ML models.")
                 
@@ -813,7 +814,7 @@ if st.session_state.get('analysis_run', False):
                             "fit_params": {}
                         }
                     )
-                elif estimation_method == "Propensity Score Matching":
+                elif estimation_method == "Propensity Score Matching (PSM)":
                     st.markdown("#### Method: Propensity Score Matching (PSM)")
                     if is_binary_outcome:
                         st.caption("ℹ️ **Binary Outcome**: Estimate represents Risk Difference (Difference in Proportions).")
@@ -891,8 +892,8 @@ if st.session_state.get('analysis_run', False):
                         }
                     )
 
-                elif estimation_method == "Causal Forest (DML)":
-                    st.markdown("#### Method: Causal Forest (DML)")
+                elif estimation_method == "Generalized Random Forests (CausalForestDML)":
+                    st.markdown("#### Method: Generalized Random Forests (CausalForestDML)")
                     st.markdown("Causal Forests extend Random Forests to estimate heterogeneous treatment effects (CATE) using an honest splitting criterion.")
                     st.latex(r"\hat{\tau}(x) = \frac{\sum \alpha_i(x) (Y_i - \hat{m}(X_i)) (T_i - \hat{e}(X_i))}{\sum \alpha_i(x) (T_i - \hat{e}(X_i))^2}")
                 
@@ -1013,7 +1014,7 @@ if st.session_state.get('analysis_run', False):
                     
 
 
-                elif estimation_method == "OLS/Logit":
+                elif estimation_method == "Linear/Logistic Regression (OLS/Logit)":
                     st.markdown("#### Method: OLS/Logit")
                     
                     use_logit = False
@@ -1078,6 +1079,31 @@ if st.session_state.get('analysis_run', False):
                                 method_name="backdoor.linear_regression",
                                 test_significance=True
                             )
+                            if estimate is None:
+                                st.warning("Debug: First estimation attempt returned None. Retrying without test_significance...")
+                                try:
+                                    estimate = model.estimate_effect(
+                                        identified_estimand,
+                                        method_name="backdoor.linear_regression",
+                                        test_significance=False
+                                    )
+                                except Exception as e:
+                                    st.error(f"Debug: Retry failed with error: {e}")
+
+                            if estimate is None:
+                                st.error("Debug: model.estimate_effect returned None for backdoor.linear_regression")
+                                st.write("Debug Info:")
+                                st.write(f"Treatment: {treatment}")
+                                st.write(f"Outcome: {outcome}")
+                                st.write(f"Confounders: {confounders}")
+                                st.write("Data Types:")
+                                st.write(df[[treatment, outcome] + confounders].dtypes)
+                                st.write("Data Head:")
+                                st.write(df[[treatment, outcome] + confounders].head())
+                                st.write("Identified Estimand:")
+                                st.write("Identified Estimand:")
+                                st.write(identified_estimand)
+                                st.stop() # Stop here to ensure user sees the debug info
                             
                             # Extract and Display Detailed Stats
                             try:
@@ -1124,6 +1150,11 @@ if st.session_state.get('analysis_run', False):
 
             
             
+            
+            if estimate is None:
+                st.error("Estimation failed (returned None). Please check your data and settings.")
+                st.stop()
+
             ate = estimate.value
         
             # --- Extract Standard Error & CI ---
@@ -1195,7 +1226,7 @@ if st.session_state.get('analysis_run', False):
                         # Re-define model on resampled data
                         # Note: We must re-instantiate CausalModel to avoid state leakage
                         # Use same modifier logic as main model
-                        if estimation_method in ["Double Machine Learning (LinearDML)", "Causal Forest (DML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
+                        if estimation_method in ["Linear Double Machine Learning (LinearDML)", "Generalized Random Forests (CausalForestDML)", "Meta-Learner: S-Learner", "Meta-Learner: T-Learner"]:
                             modifiers_boot = confounders
                         else:
                             modifiers_boot = []
@@ -1215,7 +1246,7 @@ if st.session_state.get('analysis_run', False):
                         # We need to use the exact same method and params
                         # This duplication is a bit verbose but necessary to ensure same config
                         try:
-                            if estimation_method == "Double Machine Learning (LinearDML)":
+                            if estimation_method == "Linear Double Machine Learning (LinearDML)":
                                 est_boot = model_boot.estimate_effect(
                                     identified_estimand_boot,
                                     method_name="backdoor.econml.dml.LinearDML",
@@ -1229,7 +1260,7 @@ if st.session_state.get('analysis_run', False):
                                         "fit_params": {}
                                     }
                                 )
-                            elif estimation_method == "Propensity Score Matching":
+                            elif estimation_method == "Propensity Score Matching (PSM)":
                                     est_boot = model_boot.estimate_effect(
                                     identified_estimand_boot,
                                     method_name="backdoor.propensity_score_matching"
@@ -1256,7 +1287,7 @@ if st.session_state.get('analysis_run', False):
                                         "fit_params": {}
                                     }
                                 )
-                            elif estimation_method == "Causal Forest (DML)":
+                            elif estimation_method == "Generalized Random Forests (CausalForestDML)":
                                     est_boot = model_boot.estimate_effect(
                                     identified_estimand_boot,
                                     method_name="backdoor.econml.dml.CausalForestDML",
@@ -1279,7 +1310,7 @@ if st.session_state.get('analysis_run', False):
                                     method_name="backdoor.linear_regression",
                                     test_significance=False # Speed up
                                 )
-                            elif estimation_method == "OLS/Logit":
+                            elif estimation_method == "Linear/Logistic Regression (OLS/Logit)":
                                     est_boot = model_boot.estimate_effect(
                                     identified_estimand_boot,
                                     method_name="backdoor.linear_regression",
@@ -1334,10 +1365,10 @@ if st.session_state.get('analysis_run', False):
         
             # Check if method supports Heterogeneous Treatment Effects (CATE)
             cate_methods = [
-                "Double Machine Learning (LinearDML)",
+                "Linear Double Machine Learning (LinearDML)",
                 "Meta-Learner: S-Learner",
                 "Meta-Learner: T-Learner",
-                "Causal Forest (DML)"
+                "Generalized Random Forests (CausalForestDML)"
             ]
         
             if estimation_method in cate_methods:
@@ -1348,21 +1379,25 @@ if st.session_state.get('analysis_run', False):
                     # EconML estimators in DoWhy are wrapped. 
                     # We need to pass the effect modifiers (X) to predict ITE.
                     # For this simple app, we'll use the confounders as X.
-                    X_test = df[confounders]
-                
-                    # Accessing the underlying EconML estimator can be tricky via DoWhy's unified API
-                    # But estimate.estimator object usually exposes it.
-                    # However, DoWhy's CausalEstimator might not directly expose 'effect' for all.
-                    # We will try to use the `estimate.estimator.effect(X)` if available.
-                
-                    if hasattr(estimate.estimator, 'effect'):
-                         ite = estimate.estimator.effect(X_test)
-                    elif hasattr(estimate, 'estimator_instance') and hasattr(estimate.estimator_instance, 'effect'):
-                         ite = estimate.estimator_instance.effect(X_test)
-                    else:
-                        # Fallback for some DoWhy/EconML versions
+                    if not confounders:
+                        st.warning("No confounders selected. Cannot estimate Heterogeneous Treatment Effects (ITE) based on confounders.")
                         ite = None
-                        st.warning("Could not extract ITEs from this estimator version.")
+                    else:
+                        X_test = df[confounders]
+                        
+                        # Accessing the underlying EconML estimator can be tricky via DoWhy's unified API
+                        # But estimate.estimator object usually exposes it.
+                        # However, DoWhy's CausalEstimator might not directly expose 'effect' for all.
+                        # We will try to use the `estimate.estimator.effect(X)` if available.
+                    
+                        if hasattr(estimate.estimator, 'effect'):
+                             ite = estimate.estimator.effect(X_test)
+                        elif hasattr(estimate, 'estimator_instance') and hasattr(estimate.estimator_instance, 'effect'):
+                             ite = estimate.estimator_instance.effect(X_test)
+                        else:
+                            # Fallback for some DoWhy/EconML versions
+                            ite = None
+                            st.warning("Could not extract ITEs from this estimator version.")
 
                     if ite is not None:
                         # Flatten if necessary
@@ -1383,7 +1418,7 @@ if st.session_state.get('analysis_run', False):
                         df_results['Estimated_ITE'] = ite
                     
                         # Feature Importance (Causal Forest only)
-                        if estimation_method == "Causal Forest (DML)":
+                        if estimation_method == "Generalized Random Forests (CausalForestDML)":
                             st.markdown("#### Feature Importance")
                             # EconML CausalForest has feature_importances_
                             if hasattr(estimate.estimator, 'feature_importances_'):
@@ -1465,7 +1500,7 @@ if st.session_state.get('analysis_run', False):
                     st.error(f"Error calculating ITEs: {e}")
                     df_results = df.copy()
 
-            elif estimation_method in ["OLS/Logit", "Difference-in-Differences (DiD)"]:
+            elif estimation_method in ["Linear/Logistic Regression (OLS/Logit)", "Difference-in-Differences (DiD)"]:
                 st.markdown("Analyze how the treatment effect varies across different subgroups.")
                 
                 analyze_hte = True # Always enabled by default
@@ -1487,7 +1522,7 @@ if st.session_state.get('analysis_run', False):
                         
                         for i, feature in enumerate(valid_covariates):
                             try:
-                                if estimation_method == "OLS/Logit":
+                                if estimation_method == "Linear/Logistic Regression (OLS/Logit)":
                                     # Model: Y ~ T + X + T*X + Confounders
                                     df['HTE_Interaction'] = df[treatment] * df[feature]
                                     X_hte = df[[treatment, feature, 'HTE_Interaction']]
