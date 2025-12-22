@@ -672,7 +672,7 @@ with tab_guide:
         - **Odds Ratio (OR)**: For binary outcomes using Logit, represents the relative odds of success.
         - **Implied Risk Difference**: For Logit models, the absolute change in probability at a specific baseline risk.
     
-    ### 2. Step-by-step Causal Analysis
+    ### 2. Step-by-Step Causal Analysis
     #### Step 1: Define Causal Graph
     Select your Treatment, Outcome, and Confounders. This tells the app what relationship to measure and what to control for.
     
