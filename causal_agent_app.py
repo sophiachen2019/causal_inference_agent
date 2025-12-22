@@ -663,14 +663,12 @@ with tab_guide:
         - **Binary Outcome Support**: Automatically detects binary outcomes (e.g., Conversion).
             - **OLS/Logit & DiD**: Automatically uses **Logit Model** (Odds Ratio).
             - **Other Methods**: Automatically adapts to use Classifiers.
+        - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
+            - For binary outcomes using Logit, ATE represents the relative odds of success (Odds Ratio or OR) which is converted to the absolute change in probability for ease of interpretation.
         - **Heterogeneous Treatment Effects (HTE)**: Analyze how the treatment effect varies by user characteristics (e.g., "Does the feature work better for mobile users?").
         - **Refutation Tests**: Validate your results (Placebo Treatment, Random Common Cause). *Note: Not available for Manual DiD or Logit models.*
         - **Optional Bootstrapping**: Enable/Disable bootstrapping for faster performance when Standard Errors are not needed.
-    
-    - **Key Metrics**:
-        - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
-            - For binary outcomes using Logit, ATE represents the relative odds of success (Odds Ratio or OR) which is converted to the absolute change in probability for ease of interpretation.
-    
+     
     ### 2. Step-by-Step Causal Analysis
     #### Step 1: Define Causal Graph
     Select your Treatment, Outcome, and Confounders. This tells the app what relationship to measure and what to control for.
