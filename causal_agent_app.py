@@ -355,10 +355,10 @@ with tab_eda:
                 if bucket_col and new_col_name:
                     try:
                         if bin_method == "Equal Width (cut)":
-                            st.session_state.df[new_col_name] = pd.cut(st.session_state.df[bucket_col], bins=n_bins, labels=False)
+                            st.session_state.df[new_col_name] = pd.cut(st.session_state.df[bucket_col], bins=n_bins, precision=1).astype(str)
                             method_code = "cut"
                         else:
-                            st.session_state.df[new_col_name] = pd.qcut(st.session_state.df[bucket_col], q=n_bins, labels=False, duplicates='drop')
+                            st.session_state.df[new_col_name] = pd.qcut(st.session_state.df[bucket_col], q=n_bins, duplicates='drop', precision=1).astype(str)
                             method_code = "qcut"
                         
                         # Store operation for export script
