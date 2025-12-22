@@ -669,8 +669,8 @@ with tab_guide:
     
     - **Key Metrics**:
         - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
-    - **Odds Ratio (OR)**: For binary outcomes using Logit, represents the relative odds of success.
-    - **Implied Risk Difference**: For Logit models, the absolute change in probability at a specific baseline risk.
+        - **Odds Ratio (OR)**: For binary outcomes using Logit, represents the relative odds of success.
+        - **Implied Risk Difference**: For Logit models, the absolute change in probability at a specific baseline risk.
     
     ### 2. Step-by-step Causal Analysis
     #### Step 1: Define Causal Graph
