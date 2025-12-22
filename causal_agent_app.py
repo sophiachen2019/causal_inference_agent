@@ -1123,43 +1123,7 @@ if st.session_state.get('analysis_run', False):
                     else:
                         st.info("Note: Simple Difference in Means (Unadjusted).")
                     
-                    # --- Covariate Balance Check ---
-                    if confounders:
-                        st.markdown("#### Covariate Balance (Randomization Check)")
-                        balance_data = []
-                        for col in confounders:
-                            if pd.api.types.is_numeric_dtype(df[col]):
-                                # Calculate means
-                                mean_control = df[df[treatment]==0][col].mean()
-                                mean_treat = df[df[treatment]==1][col].mean()
-                                diff = mean_treat - mean_control
-                            
-                                # T-test
-                                try:
-                                    t_stat, p_val = stats.ttest_ind(
-                                        df[df[treatment]==1][col].dropna(), 
-                                        df[df[treatment]==0][col].dropna(), 
-                                        equal_var=False
-                                    )
-                                except Exception:
-                                    p_val = np.nan
-                                
-                                balance_data.append({
-                                    "Covariate": col,
-                                    "Mean (Control)": mean_control,
-                                    "Mean (Treatment)": mean_treat,
-                                    "Diff": diff,
-                                    "P-Value": p_val
-                                })
-                    
-                        if balance_data:
-                            st.dataframe(pd.DataFrame(balance_data).style.format({
-                                "Mean (Control)": "{:.2f}",
-                                "Mean (Treatment)": "{:.2f}",
-                                "Diff": "{:.2f}",
-                                "P-Value": "{:.3f}"
-                            }))
-                            st.caption("P-values < 0.05 indicate potential imbalance (randomization failure).")
+
             
             
             ate = estimate.value
