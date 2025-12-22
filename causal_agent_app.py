@@ -667,11 +667,12 @@ with tab_guide:
         - **Refutation Tests**: Validate your results (Placebo Treatment, Random Common Cause). *Note: Not available for Manual DiD or Logit models.*
         - **Optional Bootstrapping**: Enable/Disable bootstrapping for faster performance when Standard Errors are not needed.
     
-    ### Key Metrics
-    - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
+    - **Key Metrics**:
+        - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
     - **Odds Ratio (OR)**: For binary outcomes using Logit, represents the relative odds of success.
     - **Implied Risk Difference**: For Logit models, the absolute change in probability at a specific baseline risk.
     
+    ### 2. Step-by-step Causal Analysis
     #### Step 1: Define Causal Graph
     Select your Treatment, Outcome, and Confounders. This tells the app what relationship to measure and what to control for.
     
@@ -695,11 +696,11 @@ with tab_guide:
         - **Placebo Treatment**: Should be close to 0.
         - **Random Common Cause**: Should not change the estimate significantly.
         
-    ### 4. Exporting Code
+    ### 3. Exporting Code
     - **View Generated Script**: Preview the full Python code directly in the app.
     - **Download Python Script**: Get a standalone Python file containing the analysis. You can run this locally to reproduce the results or integrate it into your pipeline.
     
-    ### 5. Version History
+    ### 4. Version History
 
     """)
     
