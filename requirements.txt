@@ -7,6 +7,7 @@ scikit-learn
 matplotlib
 
 # --- Metadata ---
-# Release: 2.0.0 | 2025-12-19 | Add methods for binary outcome.
+# Release: 2.1.0 | 2025-12-21 | Added Correlation Matrix, Placebo Treatment, and UI improvements.
+# Release: 2.0.0 | 2025-12-19 | Added methods for binary outcome.
 # Release: 1.0.0 | 2025-12-12 | Initial release with Causal Inference features.
 # Release: 0.9.0 | 2025-12-10| Beta release for internal testing.
