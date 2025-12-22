@@ -664,7 +664,7 @@ with tab_guide:
             - **OLS/Logit & DiD**: Automatically uses **Logit Model** (Odds Ratio).
             - **Other Methods**: Automatically adapts to use Classifiers.
         - **Average Treatment Effect (ATE)**: The overall impact of the intervention.
-            - **For binary outcomes using Logit, ATE represents the relative odds of success (Odds Ratio or OR) which is converted to the absolute change in probability for ease of interpretation.
+            - For binary outcomes using **Logit Model**, ATE represents the relative odds of success (Odds Ratio or OR) which is converted to the absolute change in probability for ease of interpretation.
         - **Heterogeneous Treatment Effects (HTE)**: Analyze how the treatment effect varies by user characteristics (e.g., "Does the feature work better for mobile users?").
         - **Refutation Tests**: Validate your results (Placebo Treatment, Random Common Cause). *Note: Not available for Manual DiD or Logit models.*
         - **Optional Bootstrapping**: Enable/Disable bootstrapping for faster performance when Standard Errors are not needed.
