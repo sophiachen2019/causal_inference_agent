@@ -566,7 +566,7 @@ with tab_causal:
     estimation_method = st.selectbox(
         "Estimation Method",
         [
-            "Linear/Logistic Regression (OLS/Logit",
+            "Linear/Logistic Regression (OLS/Logit)",
             "Difference-in-Differences (DiD)",
             "Propensity Score Matching (PSM)",
             "Inverse Propensity Weighting (IPTW)",
