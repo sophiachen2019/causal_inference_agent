@@ -689,14 +689,15 @@ with tab_guide:
     
     #### Step 3: Interpret Results
     - **Average Treatment Effect (ATE)**: The overall impact of the intervention, with standard error and confidence interval.
-    - **Heterogeneity (HTE)**:
+    - **Heterogeneity Analysis**: (Now part of the Estimation section)
         - **Linear Methods**: Look for the "Interaction Coefficient". A significant p-value (< 0.05) means the effect varies by that feature.
         - **CATE Methods**: Look for the "Effect Modification" table. It shows which features drive the differences in individual effects.
-    - **Refutation**: Robustness checks.
-        - **Placebo Treatment**: Should be close to 0.
-        - **Random Common Cause**: Should not change the estimate significantly.
+    
+    #### Step 4: Refutation
+    - **Random Common Cause**: Checks stability by adding a random confounder.
+    - **Placebo Treatment**: Checks validity by replacing treatment with a placebo (should be 0).
         
-    ### 3. Exporting Code
+    ### 3. Export Data and Script
     - **View Generated Script**: Preview the full Python code directly in the app.
     - **Download Python Script**: Get a standalone Python file containing the analysis. You can run this locally to reproduce the results or integrate it into your pipeline.
     
@@ -1328,41 +1329,9 @@ if st.session_state.get('analysis_run', False):
                 "after accounting for confounding variables."
             )
 
-            # --- Step 4: Refute ---
-            # Refutation (Step 4)
-            st.subheader("4. Refutation")
-            
-            if estimation_method == "Difference-in-Differences (DiD)" or (is_binary_outcome and use_logit):
-                st.warning("Refutation tests are not currently supported for this method/configuration (Manual Implementation).")
-            else:
-                st.markdown("**Methodology:** Random Common Cause Test")
-                st.markdown("We add a random variable $W_{random}$ as a common cause to the dataset.")
-                st.markdown("Since $W_{random}$ is independent of the true process, the new estimate should not change significantly.")
-                st.latex(r"Y_{new} = f(T, X, W_{random}) + \epsilon")
-                st.markdown("Expected Result: $ATE_{new} \\approx ATE_{original}$")
-
-                try:
-                    with st.spinner("Running Refutation Tests..."):
-                        refute_results = model.refute_estimate(
-                            identified_estimand,
-                            estimate,
-                            method_name="random_common_cause"
-                        )
-                    
-                    st.write("**Test: Add Random Common Cause**")
-                    st.write(f"Original Effect: {refute_results.estimated_effect:.2f}")
-                    st.write(f"New Effect: {refute_results.new_effect:.2f}")
-                    st.write(f"P-value: {refute_results.refutation_result['p_value']:.2f}")
-                
-                    if refute_results.refutation_result['p_value'] > 0.05: # Simplistic check, usually we check if new effect is close to original
-                         st.success("✅ Robustness Check Passed: The estimate is stable.")
-                    else:
-                         st.warning("⚠️ Robustness Check Warning: The estimate might be sensitive.")
-                except Exception as e:
-                    st.error(f"Refutation failed: {e}")
-
-            # --- Step 5: Explore Results ---
-            st.subheader("5. Explore Results")
+            # --- Heterogeneity Analysis (Moved from Step 5) ---
+            st.divider()
+            st.subheader("Heterogeneity Analysis")
             
             hte_feature = None
         
@@ -1436,7 +1405,7 @@ if st.session_state.get('analysis_run', False):
                                 plt.close(fig)
 
                         # --- Universal HTE Summary ---
-                        st.markdown("#### Heterogeneity Analysis (Effect Modification)")
+                        st.markdown("**Effect Modification**")
                         st.markdown("Analysis of how covariates influence the estimated Individual Treatment Effects (ITE).")
                         
                         # Allow heterogeneity analysis on any column (except treatment/outcome/time)
@@ -1500,7 +1469,6 @@ if st.session_state.get('analysis_run', False):
                     df_results = df.copy()
 
             elif estimation_method in ["OLS/Logit", "Difference-in-Differences (DiD)"]:
-                st.markdown("#### Heterogeneity Analysis")
                 st.markdown("Analyze how the treatment effect varies across different subgroups.")
                 
                 analyze_hte = True # Always enabled by default
@@ -1593,15 +1561,87 @@ if st.session_state.get('analysis_run', False):
                 df_results = df.copy()
 
             csv = df_results.to_csv(index=False).encode('utf-8')
+
+
+            # --- Step 4: Refute ---
+            # Refutation (Step 4)
+            st.subheader("4. Refutation")
+            
+            if estimation_method == "Difference-in-Differences (DiD)" or (is_binary_outcome and use_logit):
+                st.warning("Refutation tests are not currently supported for this method/configuration (Manual Implementation).")
+            else:
+                st.markdown("### Methodologies")
+                
+                st.markdown("**1. Random Common Cause Test**")
+                st.markdown("We add a random variable $W_{random}$ as a common cause to the dataset. Since $W_{random}$ is independent of the true process, the new estimate should not change significantly.")
+                st.latex(r"ATE_{new} \approx ATE_{original}")
+                
+                st.markdown("**2. Placebo Treatment Refuter**")
+                st.markdown("We replace the true treatment variable $T$ with an independent random variable $T_{placebo}$. Since the placebo treatment is random, it should have no effect on the outcome.")
+                st.latex(r"ATE_{placebo} \approx 0")
+
+                try:
+                    with st.spinner("Running Refutation Tests..."):
+                        # 1. Random Common Cause
+                        refute_results_rcc = model.refute_estimate(
+                            identified_estimand,
+                            estimate,
+                            method_name="random_common_cause"
+                        )
+                        
+                        # 2. Placebo Treatment
+                        refute_results_placebo = model.refute_estimate(
+                            identified_estimand,
+                            estimate,
+                            method_name="placebo_treatment_refuter",
+                            placebo_type="permute"
+                        )
+                    
+                    # Display Results: Random Common Cause
+                    st.write("**Test 1: Add Random Common Cause**")
+                    st.write(f"Original Effect: {refute_results_rcc.estimated_effect:.2f}")
+                    st.write(f"New Effect: {refute_results_rcc.new_effect:.2f}")
+                    st.write(f"P-value: {refute_results_rcc.refutation_result['p_value']:.2f}")
+                    
+                    if refute_results_rcc.refutation_result['p_value'] > 0.05:
+                         st.success("✅ Random Common Cause: Passed (Estimate is stable).")
+                    else:
+                         st.warning("⚠️ Random Common Cause: Warning (Estimate might be sensitive).")
+
+                    st.divider()
+
+                    # Display Results: Placebo Treatment
+                    st.write("**Test 2: Placebo Treatment**")
+                    st.markdown("Replaces the treatment with a random variable. The new effect should be close to 0.")
+                    st.write(f"Original Effect: {refute_results_placebo.estimated_effect:.2f}")
+                    st.write(f"New Effect (Placebo): {refute_results_placebo.new_effect:.2f}")
+                    st.write(f"P-value: {refute_results_placebo.refutation_result['p_value']:.2f}")
+                    
+                    # For Placebo, we want the new effect to be close to 0, so p-value should ideally be > 0.05 
+                    # (null hypothesis: effect is 0). 
+                    # DoWhy's p-value here tests if the new effect is significantly different from 0.
+                    # Wait, DoWhy's p-value interpretation depends on the test.
+                    # For placebo, we want the effect to be insignificant (p > 0.05).
+                    
+                    if refute_results_placebo.refutation_result['p_value'] > 0.05:
+                        st.success("✅ Placebo Treatment: Passed (Effect is indistinguishable from 0).")
+                    else:
+                        st.warning("⚠️ Placebo Treatment: Warning (Placebo effect is significant).")
+
+                except Exception as e:
+                    st.error(f"Refutation failed: {e}")
+
+
+
+            # --- Step 5: Export Data and Script ---
+            st.subheader("5. Export Data and Script")
+            
             st.download_button(
                 label="Download Data with Results as CSV",
                 data=csv,
                 file_name='causal_analysis_results.csv',
                 mime='text/csv',
             )
-
-            # --- Export Analysis Script ---
-            st.markdown("#### Export Analysis Script")
         
 
 
@@ -1642,14 +1682,14 @@ if st.session_state.get('analysis_run', False):
                     filtering_ops=st.session_state.filtering_ops
                 )
             
-                with st.expander("View Generated Python Script"):
-                    st.code(script, language='python')
-
                 st.download_button(
                     label="Download Python Script",
                     data=script,
                     file_name="causal_analysis.py",
                     mime="text/x-python"
                 )
+
+                with st.expander("View Generated Python Script"):
+                    st.code(script, language='python')
             except Exception as e:
                 st.error(f"Error generating script: {e}")
