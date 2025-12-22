@@ -566,14 +566,14 @@ with tab_causal:
     estimation_method = st.selectbox(
         "Estimation Method",
         [
-            "OLS/Logit",
+            "Linear/Logistic Regression (OLS/Logit",
             "Difference-in-Differences (DiD)",
             "Propensity Score Matching (PSM)",
             "Inverse Propensity Weighting (IPTW)",
             "Linear Double Machine Learning (LinearDML)", 
             "Generalized Random Forests (CausalForestDML)",
             "Meta-Learner: S-Learner",
-            "Meta-Learner: T-Learner"            
+            "Meta-Learner: T-Learner" 
         ]
     )
 
@@ -674,16 +674,16 @@ with tab_guide:
     Select your Treatment, Outcome, and Confounders. This tells the app what relationship to measure and what to control for.
     
     #### Step 2: Choose Estimation Method
-    | Method | When to use? |
+     | Method | When to use? |
     | :--- | :--- |
-    | **OLS/Logit** | When you have a randomized controlled trial (RCT) or want simple regression adjustment. |
+    | **Linear/Logistic Regression (OLS/Logit)** | When you have a randomized controlled trial (RCT) or want simple regression adjustment. |
     | **Diff-in-Differences (DiD)** | When you have data over time (Pre/Post) and a Control group. Requires a `Time Period` column. |
     | **Propensity Score Matching (PSM)** | To create a synthetic control group by matching similar users. |
     | **Inverse Propensity Weighting (IPTW)** | Weight observations by inverse probability of treatment to create a pseudo-population. |
     | **Linear Double Machine Learning (LinearDML)** | For high-dimensional controls where you want a linear treatment effect. |
     | **Generalized Random Forests (CausalForestDML)** | For estimating non-linear Heterogeneous Treatment Effects (HTE). |
     | **Meta-Learners (S/T-Learner)** | For estimating Heterogeneous Treatment Effects (HTE) using Machine Learning. |
-    
+
     #### Step 3: Interpret Results
     - **Average Treatment Effect (ATE)**: The overall impact of the intervention, with standard error and confidence interval.
     - **Heterogeneity Analysis**: (Now part of the Estimation section)
