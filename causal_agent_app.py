@@ -567,13 +567,13 @@ with tab_causal:
         "Estimation Method",
         [
             "OLS/Logit",
-            "Double Machine Learning (LinearDML)", 
-            "Propensity Score Matching",
+            "Difference-in-Differences (DiD)",
+            "Propensity Score Matching (PSM)",
             "Inverse Propensity Weighting (IPTW)",
+            "Linear Double Machine Learning (LinearDML)", 
+            "Generalized Random Forests (CausalForestDML)",
             "Meta-Learner: S-Learner",
-            "Meta-Learner: T-Learner",
-            "Causal Forest (DML)",
-            "Difference-in-Differences (DiD)"
+            "Meta-Learner: T-Learner"            
         ]
     )
 
@@ -678,10 +678,10 @@ with tab_guide:
     | :--- | :--- |
     | **OLS/Logit** | When you have a randomized controlled trial (RCT) or want simple regression adjustment. |
     | **Diff-in-Differences (DiD)** | When you have data over time (Pre/Post) and a Control group. Requires a `Time Period` column. |
-    | **Propensity Score Matching** | To create a synthetic control group by matching similar users. |
+    | **Propensity Score Matching (PSM)** | To create a synthetic control group by matching similar users. |
     | **Inverse Propensity Weighting (IPTW)** | Weight observations by inverse probability of treatment to create a pseudo-population. |
-    | **Double Machine Learning (LinearDML)** | For high-dimensional controls where you want a linear treatment effect. |
-    | **Causal Forest (DML)** | For estimating non-linear Heterogeneous Treatment Effects (HTE). |
+    | **Linear Double Machine Learning (LinearDML)** | For high-dimensional controls where you want a linear treatment effect. |
+    | **Generalized Random Forests (CausalForestDML)** | For estimating non-linear Heterogeneous Treatment Effects (HTE). |
     | **Meta-Learners (S/T-Learner)** | For estimating Heterogeneous Treatment Effects (HTE) using Machine Learning. |
     
     #### Step 3: Interpret Results
