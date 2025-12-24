@@ -146,7 +146,7 @@ def convert_bool_to_int(df):
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Causal Inference Agent", layout="wide")
-st.title("🤖 Causal Inference Agent")
+st.title("🤖 Causal Inference Application")
 st.markdown("**Builder:** [Sophia Chen](https://www.linkedin.com/in/sophia-chen-34794893/) | **Email:** sophiachen2012@gmail.com | **Medium:** [medium.com/@sophiachen2012](https://medium.com/@sophiachen2012)")
 
 def get_app_metadata():
@@ -637,7 +637,7 @@ with tab_guide:
     st.header("User Guide")
     
     st.markdown("""
-    ## Welcome to the Causal Agent App
+    ## Welcome to the Causal Inference App
     This application is designed to help you estimate causal effects from observational and A/B testing data using advanced statistical methods.
     
     ### 1. Data Preparation
